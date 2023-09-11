@@ -1,0 +1,233 @@
+use std::io::Write;
+use std::io::BufWriter;
+use std::fs::File;
+use crate::types::FatalErr;
+use crate::types::ErrorType;
+
+pub(crate) struct SliceView<'a> {
+	idx: usize,
+	buf: &'a [u8]
+}
+
+impl SliceView<'_> {
+	pub fn wrap(st: usize, buf: &[u8]) -> SliceView {
+		SliceView {
+			idx: st,
+			buf: buf
+		}
+	}
+
+	pub fn take(&mut self, len: usize) -> &[u8] {
+		let ret = &self.buf[self.idx..(self.idx+len)];
+		self.idx += len;
+		ret
+	}
+
+	pub fn decode_utf8(&mut self, len_bytes: usize) -> Result<String, FatalErr> {
+		let sl = self.take(len_bytes);
+		let retstr = std::str::from_utf8(sl);
+		match retstr {
+			Ok(s) => Ok(s.to_owned()),
+			Err(e) => {
+				Err(crate::types::new_error(ErrorType::UtfDecodeError, format!("Failed to decode slice {sl:?}\ncause:\t{e:?}")))
+			}
+		}
+	}
+
+	pub fn get_u16(&mut self) -> u16 {
+		let val = (self.buf[self.idx] as u16) << 8 | (self.buf[self.idx+1]) as u16;
+		self.idx += 2;
+		val
+	}
+
+	pub fn get_u64(&mut self) -> u64 {
+		let val = (self.buf[self.idx] as u64) << 56 | (self.buf[self.idx+1] as u64) << 48 | (self.buf[self.idx+2] as u64) << 40 | (self.buf[self.idx+3] as u64) << 32 | (self.buf[self.idx+4] as u64) << 24 | (self.buf[self.idx+5] as u64) << 16 | (self.buf[self.idx+6] as u64) << 8 | (self.buf[self.idx+7] as u64);
+		self.idx += 8;
+		val
+	}
+
+	pub fn get_u32(&mut self) ->u32 {
+		let val = (self.buf[self.idx] as u32) << 24 | (self.buf[self.idx+1] as u32) << 16 | (self.buf[self.idx+2] as u32) << 8 | (self.buf[self.idx+3] as u32); 
+		self.idx += 4;
+		val
+	}
+
+	pub fn get_u8(&mut self) -> u8 {
+		let ret = self.buf[self.idx];
+		self.idx += 1;
+		ret
+	}
+
+	pub fn offset(&self) -> usize {
+		self.idx
+	}
+
+	pub fn bytes_left(&self) -> usize {
+		self.buf.len() - self.idx
+	}
+}
+
+pub type IOResult = Result<(), std::io::Error>;
+
+pub trait OutBuf {
+	fn write_u8(&mut self, v: u8) -> IOResult;
+	fn write_u16(&mut self, v: u16) -> IOResult;
+	fn write_u32(&mut self, v: u32) -> IOResult;
+	fn write_u64(&mut self, v: u64) -> IOResult;
+	fn write_str(&mut self, v: &str) -> IOResult;
+}
+
+pub trait AsBytes {
+	fn write(&self, buf: &mut impl OutBuf) -> IOResult;
+}
+
+impl OutBuf for BufWriter<File> {
+	fn write_u8(&mut self, v: u8) -> IOResult {
+		let buf = vec![v; 1];
+		self.write_all(&buf)
+	}
+
+	fn write_u16(&mut self, v: u16) -> IOResult {
+		let mut buf = vec![0; 2];
+		buf[0] = ((v & 0xff00) >> 8) as u8;
+		buf[1] = (v & 0x00ff) as u8;
+		self.write_all(&buf)
+	}
+
+	fn write_u32(&mut self, v: u32) -> IOResult {
+		let mut buf = vec![0; 4];
+		buf[3] = (v & 0xff) as u8;
+		buf[2] = ((v >> 8) & 0xff) as u8;
+		buf[1] = ((v >> 16) & 0xff) as u8;
+		buf[0] = ((v >> 24) & 0xff) as u8;
+		self.write_all(&buf)	
+	}
+
+	fn write_u64(&mut self, v: u64) -> IOResult {
+		let mut buf = vec![0; 8];
+		buf[7] = (v & 0xff) as u8;
+		buf[6] = ((v >> 8) & 0xff) as u8;
+		buf[5] = ((v >> 16) & 0xff) as u8;
+		buf[4] = ((v >> 24) & 0xff) as u8;
+		buf[3] = ((v >> 32) & 0xff) as u8;
+		buf[2] = ((v >> 40) & 0xff) as u8;
+		buf[1] = ((v >> 48) & 0xff) as u8;
+		buf[0] = ((v >> 56) & 0xff) as u8;
+		self.write_all(&buf)
+	}
+
+	fn write_str(&mut self, v: &str) -> IOResult {
+		self.write_all(v.as_bytes())
+	}
+}
+
+/* Discarded bitset implementation
+/******************************************/
+#[derive(Debug)]
+pub struct Bitset {
+	/// The length in bits of the bitset.
+	len: usize,
+	/// A vector of length sufficient to contain atleast `len` bits.
+	data: Vec<u16>
+}
+
+impl Bitset {
+	pub fn new(len: usize) -> Bitset {
+		let size = (len >> 4) + 1;
+		let data = vec![0; size];
+		Bitset {
+			len: size,
+			data: data
+		}
+	}
+
+	pub fn set(&mut self, idx: usize) {
+		let bidx = idx >> 4;
+		let mask = (1 << (idx & 15)) as u16;
+		if bidx < self.data.len() {
+			self.data[bidx] |= mask;
+		}
+	}
+
+	pub fn clear(&mut self, idx: usize) {
+		let bidx = idx >> 4;
+		let mask = !(1 << (idx & 15)) as u16;
+		if bidx < self.data.len() {
+			self.data[bidx] &= mask;
+		}	
+	}
+
+	pub fn get(&self, idx: usize) -> bool {
+		let bidx = idx >> 4;
+		let mask = (1 << (idx & 15)) as u16;
+		if bidx < self.data.len() {
+			(self.data[bidx] & mask) != 0
+		} else {
+			false
+		}
+	}
+
+	pub fn len(&self) -> usize {
+		self.len
+	}
+
+	pub fn capacity(&self) -> usize {
+		self.data.len()
+	}
+
+	pub fn next_set_bit(&self, idx: usize) -> Option<usize> {
+		let mut bidx = idx >> 4;
+		let mut rem = idx & 15;
+		loop {
+			if bidx >= self.data.len() {
+				return None;
+			}
+			let curval = self.data[bidx];
+			if curval != 0 {
+				let mut mask = 1 << rem;
+				for i in rem..=15 {
+					if (curval & mask) != 0 {
+						return Some(bidx + i);
+					}
+					mask <<= 1;
+				}
+			}
+			bidx += 1;
+			rem = 0;
+		}
+	}
+
+	pub fn next_clear_bit(&self, idx: usize) -> Option<usize> {
+		let mut bidx = idx >> 4;
+		let mut rem = idx & 15;
+		loop {
+			if bidx >= self.data.len() {
+				return None;
+			}
+			let curval = !self.data[bidx];
+			if curval != 0 {
+				let mut mask = 1 << rem;
+				for i in rem..=15 {
+					if (curval & mask) != 0 {
+						return Some(bidx + i);
+					}
+					mask <<= 1;
+				}
+			}
+			bidx += 1;
+			rem = 0;
+		}
+	}
+}
+
+impl Display for Bitset {
+	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+		write!(fmt, "Bitset{{\n")?;
+		for i in 0..self.data.len() {
+			write!(fmt, "{:016b}\n", self.data[i])?;
+		}
+		write!(fmt, "\n}}")
+	}
+}
+/***************************************/
+*/
