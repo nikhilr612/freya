@@ -5,7 +5,8 @@
 /// 3. Miscellaneous procedures: 0xf_
 /// 4. Arithmetic instructions: 0x3_
 /// 5. Relational operators, conditional branching related instructions: 0x4_
-/// 6 .Debug related instructions: 0x5_
+/// 6. Debug related instructions: 0x5_
+/// 7. Index-related instructions: 0x6_
 
 use crate::utils::AsBytes;
 use crate::utils::OutBuf;
@@ -108,6 +109,21 @@ pub const JUMP: u8 = 0x4a;
 pub const NOP: u8 = 0x50;
 /// No-op instruction, used for debugging . Sets the debug line number in the current stack frame.
 pub const DBGLN: u8 = 0x51;
+/// if !r then raise error, otherwise no-op
+pub const ASSERT: u8 = 0x52;
+
+/// r3 <- r1[r2]
+pub const GETINDEX: u8   = 0x60;
+/// r1[r2] <- r3
+pub const PUTINDEX: u8 = 0x62;
+/// push r1, r2
+/// Append a value to the end of list-like item.
+pub const PUSHITEM: u8 = 0x63;
+/// Remove the last value of the list and store in register.
+/// r2 <- pop(r1)
+pub const POPITEM: u8 = 0x64;
+/// r2 <- r1.len()
+pub const LENGTH: u8 = 0x65;
 
 /// stdcall r1, r2
 pub const STDCALL: u8 = 0x12;
@@ -125,8 +141,10 @@ pub const SLEEP: u8 = 0xf1;
 /// r <- (line)
 /// Read characters from standard input until a newline ('\n') is encountered and store in a register.
 pub const GETLN: u8 = 0xf2;
-/// Parse a string for a number and store in a register.
-pub const PARSE: u8 = 0xf3;
+/// Parse a string for an integer and store in a register.
+pub const PARSEINT: u8 = 0xf3;
+/// Parse a string for a floating point value and store in a register.
+pub const PARSEFLT: u8 = 0xf4;
 
 macro_rules! def_instr {
 	($name: ident { $($field_name: ident : $field_type:ty),* } [$size: literal]) => {
@@ -253,12 +271,14 @@ pub fn doublet_mnemonic_map(head: &str) -> Option<u8> {
 		"swap" => Some(SWAP),
 		"&mut" => Some(BWM),
 		"&imt" => Some(BWI),
-		"floor" => Some(FLOOR),
+		"floor" =>Some(FLOOR),
 		"bnot" => Some(BNOT),
 		"move" => Some(MOV),
 		"isn0" => Some(ISN0),
-		//"getline" => Some(GETLN),
-		//"parse" => Some(PARSE),
+		"assert"=>Some(ASSERT),
+		"gline" =>Some(GETLN),
+		"s2int" => Some(PARSEINT),
+		"s2flt" => Some(PARSEFLT),
 		_ => None
 	}
 }
@@ -267,7 +287,7 @@ pub fn singlet_mnemonic_map(head: &str) -> Option<u8> {
 	match head {
 		"print" => Some(PRINT),
 		"sleep" => Some(SLEEP),
-		"incm1" => Some(INC1),
+		"incr1" => Some(INC1),
 		"lnot"  => Some(LNOT),
 		"drop"  => Some(DROP),
 		_ => None

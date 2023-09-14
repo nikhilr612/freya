@@ -6,6 +6,8 @@ use std::ops::Add;
 use core::fmt::Formatter;
 use core::fmt::Display;
 
+use crate::exec::RefCounter;
+
 #[derive(Debug)]
 #[derive(Clone)]
 pub enum ErrorType {
@@ -25,6 +27,9 @@ pub enum ErrorType {
 	NoSuchModule,
 	NotCallable,
 	InvalidCall,
+	AssertionFailure,
+	ParsingFailure,
+	NullPointer,
 	NativeError
 }
 
@@ -85,6 +90,15 @@ impl CompositeType {
 			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot compare {self:?} and {other:?}")))
 		}
 	}
+
+	pub fn length(&self) -> Result<BaseType, FatalErr> {
+		match self {
+			CompositeType::Str(s) => {
+				Ok(BaseType::Int(s.len() as i64))
+			},
+			_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'length' on {self:?}")))
+		}
+	}
 }
 
 impl Display for CompositeType {
@@ -111,7 +125,6 @@ pub enum BaseType {
 	/// Unsigned pointer-width integer, intended for native APIs to use to return opaque handles to objects.
 	OpaqueHandle(usize)
 }
-
 
 fn ref_to_addr<T>(r: &T) -> usize {
 	(r as *const T) as usize
@@ -142,8 +155,8 @@ impl Display for BaseType {
 			BaseType::Flt(f1) => write!(fmt, "{f1}"),
 			BaseType::Chr(ch) => write!(fmt, "{ch}"),
 			BaseType::Alloc(a1) => write!(fmt, "{a1:?}"),
-			BaseType::ConstRef(c1) => write!(fmt, "&{:x}", *c1 as usize),
-			BaseType::MutRef(c1) => write!(fmt, "&mut{:x}", *c1 as usize),
+			BaseType::ConstRef(c1) => write!(fmt, "<&{:x}>", *c1 as usize),
+			BaseType::MutRef(c1) => write!(fmt, "<&mut{:x}>", *c1 as usize),
 			BaseType::OpaqueHandle(h1) => write!(fmt, "<ptr@{:x}>", *h1 as usize)	
 		}
 	}
@@ -275,6 +288,8 @@ macro_rules! impl_rel_op {
 			match (rv1, rv2) {
 				(BaseType::Int(i1), BaseType::Int(i2)) => Ok(BaseType::Int(i1.$func(i2) as i64)),
 				(BaseType::Flt(f1), BaseType::Flt(f2)) => Ok(BaseType::Int(f1.$func(f2) as i64)),
+				(BaseType::Flt(f1), BaseType::Int(i2)) => Ok(BaseType::Int(f1.$func(&(*i2 as f64)) as i64)),
+				(BaseType::Int(i1), BaseType::Flt(f2)) => Ok(BaseType::Int((*i1 as f64).$func(f2) as i64)),
 				(BaseType::Chr(c1), BaseType::Chr(c2)) => Ok(BaseType::Int(c1.$func(c2) as i64)),
 				(BaseType::Alloc(a1), BaseType::Alloc(a2)) => {a1.lt(a2)},
 				(BaseType::ConstRef(a1), BaseType::ConstRef(a2)) => unsafe {
@@ -294,23 +309,7 @@ impl_arith_op!(try_sub, sub, '-');
 impl_arith_op!(try_rem, rem, '%');
 impl_rel_op!(try_lt, lt, '<');
 impl_rel_op!(try_gt, gt, '>');
-
-pub fn try_eq (rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
-	match (rv1, rv2) {
-		(BaseType::Int(i1), BaseType::Int(i2)) => Ok(BaseType::Int((i1 == i2) as i64)),
-		(BaseType::Flt(f1), BaseType::Flt(f2)) => Ok(BaseType::Int((f1 == f2) as i64)),
-		(BaseType::Int(i1), BaseType::Flt(f2)) => Ok(BaseType::Int((*i1 as f64 == *f2) as i64)),
-		(BaseType::Flt(f1), BaseType::Int(i2)) => Ok(BaseType::Int((*i2 as f64 == *f1) as i64)),
-		(BaseType::Chr(c1), BaseType::Chr(c2)) => Ok(BaseType::Int((c1 == c2) as i64)),
-		(BaseType::Alloc(a1), BaseType::Alloc(a2)) => {a1.eq(a2)},
-		(BaseType::ConstRef(a1), BaseType::ConstRef(a2)) => unsafe {
-			let a1 = a1.as_ref().unwrap();
-			let a2 = a2.as_ref().unwrap();
-			a1.eq(a2)
-		},
-		_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported '==' between {rv1}, {rv2}")))
-	}
-}
+impl_rel_op!(try_eq, eq, "==");
 
 #[inline]
 pub fn try_neq(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
@@ -369,4 +368,43 @@ pub fn as_bool(rv: &BaseType) -> bool {
 		BaseType::Chr(c1) => {*c1 != '\0'},
 		_ => true
 	}
+}
+
+pub(crate) fn as_composite_type<'a>(rv: &'a BaseType, refc: &RefCounter) -> Result<&'a CompositeType, FatalErr> {
+	let ret = match rv {
+		BaseType::Alloc(a) => {
+			a.as_ref()
+		},
+		BaseType::ConstRef(ptr) => {
+			unsafe{ ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced."))) }?
+		},
+		_ => { return Err(new_error(ErrorType::TypeMismatch, format!("{rv} is NOT a composite type."))) }
+	};
+	refc.verify_borrow(ret)?;
+	Ok(ret)
+}
+
+pub(crate) fn as_composite_type_mut<'a>(rv: &'a mut BaseType, refc: &RefCounter) -> Result<&'a mut CompositeType, FatalErr> {
+	match rv {
+		BaseType::Alloc(a) => {
+			let mref = a.as_mut();
+			refc.verify_borrow_mut(mref)?;
+			Ok(mref)
+		},
+		BaseType::MutRef(ptr) => {
+			Ok(unsafe { ptr.as_mut().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?)
+		},
+		_ => { Err(new_error(ErrorType::TypeMismatch, format!("{rv} is NOT a composite type."))) }
+	}
+}
+
+#[inline]
+pub fn as_string(rv: &BaseType) -> Result<String,FatalErr> {
+	Ok(match rv {
+		BaseType::ConstRef(ptr) => {
+			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?;
+			format!("{ctype}")
+		},
+		_ => format!("{rv}")
+	})
 }

@@ -1,3 +1,5 @@
+use std::io::BufRead;
+use std::str::FromStr;
 use core::time::Duration;
 use std::sync::Arc;
 use crate::module::ModulePool;
@@ -100,40 +102,30 @@ impl CallFrame {
 		Ok(rval)	
 	}
 
-	fn write_unchecked(&mut self, rid: usize, val: BaseType, rc: &mut RefCounter) -> FResult<()>{
-		if let Some(btype) = &self.regs[rid] {
-			Self::cleanup_value(btype, rc)?;	// Decrement ref, if any	
+	fn write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
+		if let Some(btype) = self.regs[rid].take() {
+			Self::cleanup_value(btype, rc)?;
 		}
-		// Explicit mem replace and drop for clarity.
-		let prev = std::mem::replace(&mut self.regs[rid], Some(val));
-		std::mem::drop(prev);
+		self.regs[rid] = val;
 		Ok(())
 	}
 
 	fn write_register(&mut self, r: u8, val: BaseType, rc: &mut RefCounter) -> FResult<()> {
 		let rid = self.get_reg_id(r)?;
-		self.write_unchecked(rid, val, rc)
+		self.write_unchecked(rid, Some(val), rc)
 	}
 
 	fn drop_register(&mut self, r: u8, rc: &mut RefCounter) -> FResult<()> {
 		let rid = self.get_reg_id(r)?;
-		if let Some(btype) = &self.regs[rid] {
-			Self::cleanup_value(btype, rc)?;
-		}
-		std::mem::drop(self.regs[rid].take());
-		Ok(())
+		self.write_unchecked(rid, None, rc)
 	}
 
 	fn move_register(&mut self, r1: u8, r2: u8, rc: &mut RefCounter) -> FResult<()> {
 		// TODO: Re-implement using _take_register
 		let r1 = self.get_reg_id(r1)?;
 		let v1 = self._take_register(r1, rc)?;
-		if let None = v1 {
-			self.drop_register(r2, rc)?;
-		} else if let Some(btype) = v1 {
-			self.write_register(r2, btype, rc)?
-		}
-		Ok(())
+		let r2 = self.get_reg_id(r2)?;
+		self.write_unchecked(r2, v1, rc)
 	}
 
 	fn _take_register(&mut self, r1: usize, rc: &mut RefCounter) -> FResult<Option<BaseType>> {
@@ -147,25 +139,31 @@ impl CallFrame {
 				BaseType::Int(v) => {BaseType::Int(*v)},
 				BaseType::Flt(v) => {BaseType::Flt(*v)},
 				BaseType::Chr(v) => {BaseType::Chr(*v)},
-				BaseType::Alloc(_) => {
-					self.regs[r1].take().unwrap()
-				},
-				BaseType::MutRef(_) => {
-					self.regs[r1].take().unwrap()
-				},
-				BaseType::OpaqueHandle(_) => {
-					self.regs[r1].take().unwrap()
+				BaseType::Alloc(a) => {
+					match a.as_ref() {
+						// FRefs are immutable, no restrictions on copy.
+						types::CompositeType::FRef { mod_id, func_idx, unext } => {
+							let cloned =  types::CompositeType::FRef { mod_id: *mod_id, func_idx: *func_idx, unext: *unext };
+							BaseType::Alloc(Box::new(cloned))
+						},
+						_ => self.regs[r1].take().unwrap()
+					}
 				},
 				BaseType::ConstRef(v) => {
+					// ConstRefs are copy on move.
 					rc.incref(*v)?;
 					BaseType::ConstRef(*v)
+				},
+				_ => {
+					// Move mutable refs, OpaqueHandles
+					self.regs[r1].take().unwrap()
 				}
 			}
 		;
 		Ok(Some(ret))
 	}
 
-	fn cleanup_ctype(ctype: &types::CompositeType, _rc: &mut RefCounter) -> FResult<()> {
+	fn dealloc_ctype(ctype: types::CompositeType) -> FResult<()> {
 		match ctype {
 			types::CompositeType::FRef { mod_id: _, func_idx: _, unext: _}  => {
 				// No alloc here.
@@ -180,18 +178,16 @@ impl CallFrame {
 		Ok(())
 	}
 
-	fn cleanup_value(btype: &BaseType, rc: &mut RefCounter) -> FResult<()> {
+	fn cleanup_value(btype: BaseType, rc: &mut RefCounter) -> FResult<()> {
 		match btype {
-			BaseType::ConstRef(r) => rc.decref(*r),
-			BaseType::MutRef(r) => rc.decref_mut(*r),
+			BaseType::ConstRef(r) => rc.decref(r),
+			BaseType::MutRef(r) => rc.decref_mut(r),
 			BaseType::Alloc(bx) => {
 				let c = rc.count_of(bx.as_ref());
 				if c != (0,0) {
-					return Err(types::new_error(ErrorType::PrematureDealloc, format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)));
-				} else {
-					Self::cleanup_ctype(bx, rc)?;
-					return Ok(())
-				}
+					 Err(types::new_error(ErrorType::PrematureDealloc, 
+					 	format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)))
+				} else { Self::dealloc_ctype(*bx) }
 			}
 			_ => {
 				Ok(())
@@ -199,15 +195,15 @@ impl CallFrame {
 		}
 	}
 
-	fn _take_unchecked(&mut self, r1: u8) -> FResult<BaseType> {
+	fn _take_unchecked(&mut self, r1: u8) -> FResult<Option<BaseType>> {
 		let r1 = self.get_reg_id(r1)?;
-		Ok(self.regs[r1].take().unwrap())
+		Ok(self.regs[r1].take())
 	}
 
 	fn release(self, rc: &mut RefCounter) -> FResult<()> {
 		for r in self.regs {
 			if let Some(val) = r {
-				Self::cleanup_value(&val, rc)?;
+				Self::cleanup_value(val, rc)?;
 			}
 		}
 		Ok(())
@@ -264,12 +260,13 @@ impl RefCounter {
 		if self.refctr.contains_key(&addr) {
 			let tup = self.refctr.get_mut(&addr).unwrap();
 			let r = unsafe {&*ptr};
-			if tup.0 != 0 {
+			if tup.0 > 0 {
 				return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{r}, has {} active immutable reference(s), and hence cannot acquire mutable reference.", tup.0)));
 			}
-			if tup.1 != 0 {
+			if tup.1 > 0 {
 				return Err(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{r} already has an active mutable reference.")));
 			}
+			tup.1 = 1;
 		} else {
 			self.refctr.insert(addr, (0, 1));
 		}
@@ -312,6 +309,7 @@ impl RefCounter {
 		return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
 	}
 
+	/// Get the number of active immutable and mutable references for a given composite type.
 	fn count_of(&self, addr: *const types::CompositeType) -> (usize, usize) {
 		let addr = addr as usize;
 		if self.refctr.contains_key(&addr) {
@@ -319,6 +317,28 @@ impl RefCounter {
 		} else {
 			(0,0)
 		}
+	}
+
+	/// Verify that the value can be borrowed immutably.
+	pub(crate) fn verify_borrow(&self, value: &types::CompositeType) -> FResult<()> {
+		let (_, mcount) = self.count_of(value);
+		let addr = (value as *const types::CompositeType) as usize;
+		if mcount > 0 {
+			return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has an active mutable reference, hence cannot acquire immutable reference.")));
+		}
+		Ok(())
+	}
+
+	/// Verify that the value can be borrowed mutably.
+	pub(crate) fn verify_borrow_mut(&self, value: &mut types::CompositeType) -> FResult<()> {
+		let (icount, mcount) = self.count_of(value);
+		let addr = (value as *const types::CompositeType) as usize;
+		if icount > 0 {
+			return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has active immutable reference(s), hence cannot acquire mutable reference.")));
+		} else if mcount > 0 {
+			return Err(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{value} already has an active mutable reference")));
+		}
+		Ok(())
 	}
 }
 
@@ -500,17 +520,7 @@ impl WorkerThread {
 				},
 				op::PRINT => {
 					let rval = cur_frame.read_register(slvw.get_u8())?;
-					match rval {
-						BaseType::ConstRef(cref) => {
-							unsafe {
-								let imref = &**cref;
-								println!("{}", imref);
-							}
-						},
-						a => {
-							println!("{}", a)
-						}
-					};
+					println!("{}", types::as_string(rval)?);
 				},
 				op::SLEEP => {
 					let rv1 = cur_frame.read_register(slvw.get_u8())?;
@@ -647,6 +657,7 @@ impl WorkerThread {
 
 					std::mem::drop(slvw); std::mem::drop(cur_frame); std::mem::drop(cur_module); std::mem::drop(module_pool_vec_read); // Explicit drops for clarity.
 					let (mid, fid) = _prep_fcall(&self.pool,mod_id, func_idx, unext)?;
+					// eprintln!("call fn, {mid}:{fid} with {param:?}");
 					let new_frame = _make_frame(param, &self.pool, mid, fid)?;
 
 					if !is_tc {
@@ -686,6 +697,55 @@ impl WorkerThread {
 				op::DBGLN => {
 					let line_number = slvw.get_u32();
 					cur_frame.debug_lnum = line_number;
+				},
+				op::ASSERT => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let val = cur_frame.read_register(dreg.r1)?;
+					if !types::as_bool(val) {
+						if usize::from(dreg.r2)>= cur_frame.regs.len() {
+							return Err(new_error(ErrorType::AssertionFailure, format!("Value {val} evaluates to false")));
+						} else {
+							let msg = cur_frame.read_register(dreg.r2)?;
+							return Err(new_error(ErrorType::AssertionFailure, format!("{msg}")));
+						}
+					}
+				},
+				op::GETLN => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let val1 = types::as_string(cur_frame.read_register(dreg.r1)?)?;
+					print!("{val1}");
+					let stdin = std::io::stdin();
+					let wval = BaseType::Alloc(Box::new(types::CompositeType::Str(stdin.lock().lines().next().unwrap().unwrap())));
+					cur_frame.write_register(dreg.r2, wval, &mut self.refc)?;
+				},
+				op::PARSEINT => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let val  = cur_frame.read_register(dreg.r1)?;
+					let text = match types::as_composite_type(val, &self.refc)? { 
+						types::CompositeType::Str(s) => s,
+						_ => {
+							return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse integer from {val} (not Str)")));
+						}
+					};
+					let val  = BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Int"))})?);
+					cur_frame.write_register(dreg.r2, val, &mut self.refc)?;
+				},
+				op::PARSEFLT => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let val  = cur_frame.read_register(dreg.r1)?;
+					let text = match types::as_composite_type(val, &self.refc)? { 
+						types::CompositeType::Str(s) => s,
+						_ => {
+							return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse float from {val} (not Str)")));
+						}
+					};
+					let val  = BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Flt"))})?);
+					cur_frame.write_register(dreg.r2, val, &mut self.refc)?;
+				},
+				op::LENGTH => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let val = types::as_composite_type(cur_frame.read_register(dreg.r1)?, &self.refc)?;
+					cur_frame.write_register(dreg.r2, val.length()?, &mut self.refc)?;
 				},
 				_ => {
 					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {:x} at offset {}", opcode, cur_frame.ip)));

@@ -14,7 +14,7 @@ use std::fs::File;
 use std::collections::HashMap;
 
 pub const MAGIC: [u8; 4] = [0x3e, 0xb3, 0x14, 0x63];
-
+pub const FILEXT: &str = ".fr";
 pub type FResult<T> = Result<T, FatalErr>;
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ pub struct ExternDecl {
 impl ExternDecl {
 	fn new_extern(mpath: &str, fn_name: &str) -> ExternDecl {
 		let mut mp = mpath.to_owned();
-		mp.push_str(".fr");
+		mp.push_str(FILEXT);
 		ExternDecl {
 			module_path: mp,
 			func_name: fn_name.to_owned(),
