@@ -12,9 +12,12 @@ use crate::exec::RefCounter;
 #[derive(Clone)]
 pub enum ErrorType {
 	ModuleLoadFailure,
+	AssertionFailure,
+	ParsingFailure,
 	UtfDecodeError,
 	InvalidOpcode,
 	InvalidRegister,
+	IllegalState,
 	EmptyRegister,
 	IncompleteInstr,
 	TypeMismatch,
@@ -27,9 +30,8 @@ pub enum ErrorType {
 	NoSuchModule,
 	NotCallable,
 	InvalidCall,
-	AssertionFailure,
-	ParsingFailure,
 	NullPointer,
+	InvalidIndex,
 	NativeError
 }
 
@@ -56,6 +58,12 @@ impl Display for FatalErr {
 #[derive(Debug)]
 pub enum CompositeType {
 	Str(String),
+	Slice {
+		parent: *const CompositeType,
+		start_off: usize,
+		end_off: usize,
+		reverse: bool
+	},
 	// List(Vec<BaseType>), // TODO: Implement list operations.
 	// Table(HashMap<String, BaseType>), // TODO: Sort out details of dict implementation. 
 	FRef {
@@ -96,7 +104,112 @@ impl CompositeType {
 			CompositeType::Str(s) => {
 				Ok(BaseType::Int(s.len() as i64))
 			},
-			_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'length' on {self:?}")))
+			CompositeType::Slice{parent: _, start_off, end_off, ..} => {
+				Ok(BaseType::Int((end_off - start_off) as i64))
+			},
+			CompositeType::FRef {..} => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'length' on {self:?}")))
+		}
+	}
+
+	pub fn push(&mut self, val: BaseType) -> Result<(), FatalErr> {
+		match self {
+			CompositeType::Str(s) => Ok(s.push_str(&as_printrepr(&val)?)),
+			CompositeType::FRef {..} | CompositeType::Slice {..} => {
+				Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'push' on {self:?}")))
+			}
+		}
+	}
+
+	pub fn pop(&mut self) -> Result<BaseType, FatalErr> {
+		match self {
+			CompositeType::Str(s) => {
+				let ch = s.pop();
+				match ch {
+					None => Err(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty string."))),
+					Some(ch) => Ok(BaseType::Chr(ch)),
+				}
+			},
+			CompositeType::Slice { parent, start_off, end_off, reverse } => {
+				let parent = unsafe{ parent.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("Slice is over a NULL parent."))) }?;
+				match parent {
+					CompositeType::Str(string) => {
+						let stringref = &string[*start_off..*end_off];
+						let mut charindex_iter = stringref.char_indices();
+						if *reverse {
+							let (index, ch) = charindex_iter.next().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
+							*start_off += index;
+							Ok(BaseType::Chr(ch))
+						} else {
+							let (index, ch) = charindex_iter.next_back().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
+							*end_off = index + *start_off;
+							Ok(BaseType::Chr(ch))
+						}
+					},
+					// TODO: Add List Slices.
+					CompositeType::Slice {..} | CompositeType::FRef {..} => panic!("Slices cannot have any parents other than Str or List.")
+				}
+			}
+			CompositeType::FRef {..} => {
+				Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'pop' on {self:?}")))
+			}
+		}
+	}
+
+	fn _verify_index(idx: i64, len: usize) -> Result<usize, FatalErr> {
+		let idx = if idx < 0 { idx + len as i64 } else {idx};
+		if idx < 0 {
+			return Err(new_error(ErrorType::InvalidIndex, format!("{idx}  < -{len}. Index is atleast -length")));
+		} 
+		let idx = idx as usize;
+		if idx >= len {
+			return Err(new_error(ErrorType::InvalidIndex, format!("{idx} >= {len}. Index is strictly less than length.")))
+		};
+		Ok(idx)
+	}
+
+	fn _new_slice(s_off: i64, e_off: i64, len: usize) -> Result<(usize, usize, bool), FatalErr> {
+		let s_off = Self::_verify_index(s_off, len)?;
+		let e_off = Self::_verify_index(e_off, len)?;
+		if s_off > e_off {
+			Ok((e_off, s_off, true))
+		} else {
+			Ok((s_off, e_off, false))
+		}
+	}
+
+	pub(crate) fn slice(&self, s1: &BaseType, s2: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
+		let s_off = match s1 {
+			BaseType::Int(i) => *i,
+			a => {return Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice with value {a}, must be Int")));}
+		};
+		let e_off = match s2 {
+			BaseType::Int(i) => *i,
+			a => {return Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice with value {a}, must be Int")));}
+		};
+		match self {
+			CompositeType::Str(s) => {
+				let (s_off, e_off, rev) = Self::_new_slice(s_off, e_off, s.len())?;
+				let parent = self as *const CompositeType;
+				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev};
+				refc.incref(parent)?;
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
+			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
+				let len = end_off - start_off;
+				refc.incref(*parent)?;
+				let (s_off, e_off, rev) = Self::_new_slice(s_off, e_off, len)?;
+				let ctype = if !reverse {
+					let real_s_off = start_off + s_off;
+					let real_e_off = start_off + e_off;
+					CompositeType::Slice {parent: *parent, start_off: real_s_off, end_off: real_e_off, reverse: rev}
+				} else {
+					let real_s_off = end_off - s_off;
+					let real_e_off = end_off - e_off;
+					CompositeType::Slice {parent: *parent, start_off: real_e_off, end_off: real_s_off, reverse: !rev}
+				};
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
+			a => Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice value {a}")))
 		}
 	}
 }
@@ -105,6 +218,27 @@ impl Display for CompositeType {
 	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
 		match self {
 			CompositeType::Str(s) => write!(fmt, "{}", s),
+			CompositeType::Slice {parent, start_off, end_off, reverse} => {
+				let parent = unsafe{ parent.as_ref().unwrap() };
+				match parent {
+					CompositeType::Str(string) => {
+						if *reverse {
+							let iter = string[*start_off..*end_off].chars().rev();
+							for ch in iter {
+								write!(fmt, "{ch}")?;
+							}
+						} else {
+							let iter = string[*start_off..*end_off].chars();
+							for ch in iter {
+								write!(fmt, "{ch}")?;
+							} 
+						}
+						Ok(())
+					},
+					// TODO: Add List slices
+					CompositeType::Slice {..} | CompositeType::FRef {..} => panic!("Slices cannot have any parents other than Str or List.")
+				}
+			}
 			a => write!(fmt, "{:?}", a)
 		}
 	}
@@ -399,7 +533,7 @@ pub(crate) fn as_composite_type_mut<'a>(rv: &'a mut BaseType, refc: &RefCounter)
 }
 
 #[inline]
-pub fn as_string(rv: &BaseType) -> Result<String,FatalErr> {
+pub fn as_printrepr(rv: &BaseType) -> Result<String,FatalErr> {
 	Ok(match rv {
 		BaseType::ConstRef(ptr) => {
 			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?;

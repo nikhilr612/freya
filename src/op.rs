@@ -15,34 +15,34 @@ use crate::types::ErrorType;
 use crate::utils::SliceView;
 use paste::paste;
 
-/// Set r3 <- r1 + r2
+/// Set `r3 <- r1 + r2`
 pub const ADD: u8 = 0x30;
-/// Set r3 <- r1 - r2
+/// Set `r3 <- r1 - r2`
 pub const SUB: u8 = 0x31;
-/// Set r3 <- r1 * r2
+/// Set `r3 <- r1 * r2`
 pub const MUL: u8 = 0x32;
-/// Set r3 <- r1 / r2; 
+/// Set `r3 <- r1 / r2` 
 /// Note: r3 always has type `Flt`
 pub const DIV: u8 = 0x33;
-/// Set r1 <- r1 + (i16)
+/// Set `r1 <- r1 + (i16)`
 pub const IINC: u8 = 0x34;
-/// Set r1 <- r1 + 1
+/// Set `r1 <- r1 + 1`
 pub const INC1: u8 = 0x35;
-/// Integer division. r3 <- r1 // r2
+/// Integer division. `r3 <- r1 // r2`
 /// Note: r3 always has type `Int`
 pub const IDIV: u8 = 0x36;
-/// Get remainder of division. r3 <- r1 % r2
+/// Get remainder of division. `r3 <- r1 % r2`
 pub const REM: u8 = 0x37;
-/// Bit-wise NOT r2 <- ~r1
+/// Bit-wise NOT `r2 <- ~r1`
 pub const BNOT: u8 = 0x38;
-/// Bit-wise AND r3 <- r1 & r2
+/// Bit-wise AND `r3 <- r1 & r2`
 pub const BAND: u8 = 0x39;
-/// Bit-wise OR r3 <- r1 | r2
+/// Bit-wise OR `r3 <- r1 | r2`
 pub const BOR: u8 = 0x3a;
 /// Bit-wise exclusive or
-/// r3 <- r1 ^ r2
+/// `r3 <- r1 ^ r2`
 pub const XOR: u8 = 0x3b;
-/// Left-shift
+/// Left-shift r
 pub const LSHIFT: u8 = 0x3c;
 /// Right-shift
 pub const RSHIFT: u8 = 0x3d;
@@ -117,13 +117,17 @@ pub const GETINDEX: u8   = 0x60;
 /// r1[r2] <- r3
 pub const PUTINDEX: u8 = 0x62;
 /// push r1, r2
+/// r1.append(r2)
 /// Append a value to the end of list-like item.
-pub const PUSHITEM: u8 = 0x63;
+pub const PUSH: u8 = 0x63;
 /// Remove the last value of the list and store in register.
 /// r2 <- pop(r1)
-pub const POPITEM: u8 = 0x64;
+pub const POP: u8 = 0x64;
 /// r2 <- r1.len()
 pub const LENGTH: u8 = 0x65;
+/// For list-like objects, create a view for sub-list.
+/// r4 <- r1[r2..r3]
+pub const SLICE: u8 = 0x66;
 
 /// stdcall r1, r2
 pub const STDCALL: u8 = 0x12;
@@ -240,6 +244,15 @@ def_instr! {
 		r1: u8,
 		addr: u32
 	} [5]
+}
+
+def_instr! {
+	QuadrupleRegst {
+		r1: u8,
+		r2: u8,
+		s1: u8,
+		s2: u8
+	} [4]
 }
 
 pub fn triplet_mnemonic_map(head: &str) -> Option<u8> {

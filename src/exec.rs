@@ -163,13 +163,17 @@ impl CallFrame {
 		Ok(Some(ret))
 	}
 
-	fn dealloc_ctype(ctype: types::CompositeType) -> FResult<()> {
+	fn dealloc_ctype(ctype: types::CompositeType, refc: &mut RefCounter) -> FResult<()> {
 		match ctype {
 			types::CompositeType::FRef { mod_id: _, func_idx: _, unext: _}  => {
 				// No alloc here.
 			},
 			types::CompositeType::Str(_s) => {
 				// No sub objects owned.
+			},
+			types::CompositeType::Slice { parent, ..} => {
+				// Has an immutable reference to parent object. Drop that reference.
+				refc.decref(parent)?;
 			}
 			/*,_ => {
 				unimplemented!()
@@ -187,7 +191,7 @@ impl CallFrame {
 				if c != (0,0) {
 					 Err(types::new_error(ErrorType::PrematureDealloc, 
 					 	format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)))
-				} else { Self::dealloc_ctype(*bx) }
+				} else { Self::dealloc_ctype(*bx, rc) }
 			}
 			_ => {
 				Ok(())
@@ -433,6 +437,13 @@ fn _make_frame(mut param: Vec<Option<BaseType>>, pool: &ModulePool, mid: usize, 
 	Ok(new_frame)
 }
 
+#[inline]
+fn _get_line(prompt: &str) -> String {
+	print!("{prompt}");
+	let stdin = std::io::stdin();
+	stdin.lock().lines().next().unwrap().unwrap()
+}
+
 macro_rules! instr_3arg {
 	($func: expr, $slvw: ident, $frame: ident, $refc: expr) => {
 		{
@@ -446,6 +457,17 @@ macro_rules! instr_3arg {
 			$frame.write_register(rid, res, &mut $refc)?;
 		}
 	};
+}
+
+macro_rules! instr_2arg {
+	($slvw: ident, $frame: ident, $refc: expr, |$val:ident| $body: block) => {
+		{
+			let param = op::DoubleRegst::try_from(&mut $slvw)?;
+			let $val = $frame.read_register(param.r1)?;
+			let res = $body;
+			$frame.write_register(param.r2, res, &mut $refc)?;
+		}
+	}
 }
 
 impl WorkerThread {
@@ -520,7 +542,7 @@ impl WorkerThread {
 				},
 				op::PRINT => {
 					let rval = cur_frame.read_register(slvw.get_u8())?;
-					println!("{}", types::as_string(rval)?);
+					println!("{}", types::as_printrepr(rval)?);
 				},
 				op::SLEEP => {
 					let rv1 = cur_frame.read_register(slvw.get_u8())?;
@@ -563,21 +585,6 @@ impl WorkerThread {
 					let r2 = dreg.r2 as usize % cur_frame.regs.len();
 					cur_frame.regs.swap(r1, r2);
 				},
-				op::FLOOR => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let rval = cur_frame.read_register(dreg.r1)?;
-					let res = types::try_floor(rval).ok_or(types::new_error(ErrorType::TypeMismatch, format!("Unsupported 'floor' on {rval}")))?;
-					cur_frame.write_register(dreg.r2, res, &mut self.refc)?;
-				},
-				op::BNOT => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let rval = cur_frame.read_register(dreg.r1)?;
-					let res = match rval {
-						BaseType::Int(i1) => BaseType::Int(!*i1),
-						 _ => {return Err(types::new_error(ErrorType::TypeMismatch, format!("Unsupported bitwise not on {rval}")));}
-					};
-					cur_frame.write_register(dreg.r2, res, &mut self.refc)?;	
-				}
 				op::IINC => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
 					let rv1 = cur_frame.read_register(param.r1)?;
@@ -591,12 +598,6 @@ impl WorkerThread {
 					let rv2 = types::BaseType::Int(1);
 					let res = types::try_add(rv1, &rv2)?;
 					cur_frame.write_register(r1, res, &mut self.refc)?;
-				},
-				op::ISN0 => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let rv = cur_frame.read_register(dreg.r1)?;
-					let res = if types::as_bool(rv) {types::BaseType::Int(1)} else {types::BaseType::Int(0)};
-					cur_frame.write_register(dreg.r2, res, &mut self.refc)?;
 				},
 				op::MOV => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
@@ -710,43 +711,46 @@ impl WorkerThread {
 						}
 					}
 				},
-				op::GETLN => {
+				op::PARSEINT => instr_2arg!(slvw, cur_frame, self.refc, |val| {
+					let text = match types::as_composite_type(val, &self.refc)? { 
+						types::CompositeType::Str(s) => s,
+						_ => { return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse integer from {val} (not Str)")));}
+					};
+					BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Int"))})?)
+				}),
+				op::PARSEFLT => instr_2arg!(slvw, cur_frame, self.refc, |val| {
+					let text = match types::as_composite_type(val, &self.refc)? { 
+						types::CompositeType::Str(s) => s,
+						_ => { return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse float from {val} (not Str)"))); }
+					};
+					BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Flt"))})?)
+				}),
+				op::GETLN => instr_2arg!(slvw, cur_frame, self.refc, |val| {BaseType::Alloc(Box::new(types::CompositeType::Str(_get_line(&types::as_printrepr(val)?))))}),
+				op::LENGTH => instr_2arg!(slvw, cur_frame, self.refc, |val| {types::as_composite_type(val, &self.refc)?.length()?}),
+				op::BNOT => instr_2arg!(slvw, cur_frame, self.refc, |rval| { match rval {BaseType::Int(i1) => BaseType::Int(!*i1),_ => {return Err(types::new_error(ErrorType::TypeMismatch, format!("Unsupported bitwise not on {rval}")));}}}),
+				op::FLOOR => instr_2arg!(slvw, cur_frame, self.refc, |rval| {types::try_floor(rval).ok_or(types::new_error(ErrorType::TypeMismatch, format!("Unsupported 'floor' on {rval}")))?}),
+				op::ISN0 => instr_2arg!(slvw, cur_frame, self.refc, |rv| {if types::as_bool(rv) {types::BaseType::Int(1)} else {types::BaseType::Int(0)}}),
+				op::PUSH => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let val1 = types::as_string(cur_frame.read_register(dreg.r1)?)?;
-					print!("{val1}");
-					let stdin = std::io::stdin();
-					let wval = BaseType::Alloc(Box::new(types::CompositeType::Str(stdin.lock().lines().next().unwrap().unwrap())));
+					let r2 = cur_frame.get_reg_id(dreg.r2)?;
+					let pval = cur_frame._take_register(r2, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Cannot push value from empty register {r2}")))?;
+					let rval = cur_frame.read_mutregst(dreg.r1)?;
+					types::as_composite_type_mut(rval, &self.refc)?.push(pval)?;
+				},
+				op::POP => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let rval = cur_frame.read_mutregst(dreg.r1)?;
+					let wval = types::as_composite_type_mut(rval, &self.refc)?.pop()?;
 					cur_frame.write_register(dreg.r2, wval, &mut self.refc)?;
 				},
-				op::PARSEINT => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let val  = cur_frame.read_register(dreg.r1)?;
-					let text = match types::as_composite_type(val, &self.refc)? { 
-						types::CompositeType::Str(s) => s,
-						_ => {
-							return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse integer from {val} (not Str)")));
-						}
-					};
-					let val  = BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Int"))})?);
-					cur_frame.write_register(dreg.r2, val, &mut self.refc)?;
-				},
-				op::PARSEFLT => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let val  = cur_frame.read_register(dreg.r1)?;
-					let text = match types::as_composite_type(val, &self.refc)? { 
-						types::CompositeType::Str(s) => s,
-						_ => {
-							return Err(new_error(ErrorType::TypeMismatch, format!("Cannot parse float from {val} (not Str)")));
-						}
-					};
-					let val  = BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Flt"))})?);
-					cur_frame.write_register(dreg.r2, val, &mut self.refc)?;
-				},
-				op::LENGTH => {
-					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let val = types::as_composite_type(cur_frame.read_register(dreg.r1)?, &self.refc)?;
-					cur_frame.write_register(dreg.r2, val.length()?, &mut self.refc)?;
-				},
+				op::SLICE => {
+					let qreg = op::QuadrupleRegst::try_from(&mut slvw)?;
+					let ctype = types::as_composite_type(cur_frame.read_register(qreg.r2)?, &self.refc)?;
+					let s1 = cur_frame.read_register(qreg.s1)?;
+					let s2 = cur_frame.read_register(qreg.s2)?;
+					let val = ctype.slice(s1, s2, &mut self.refc)?;
+					cur_frame.write_register(qreg.r1, val, &mut self.refc)?;
+				}
 				_ => {
 					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {:x} at offset {}", opcode, cur_frame.ip)));
 				}
