@@ -95,6 +95,10 @@ impl CompositeType {
 	pub fn eq(&self, other: &CompositeType) -> Result<BaseType, FatalErr> {
 		match (self, other) {
 			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(BaseType::Int((s1 == s2) as i64)),
+			(CompositeType::Slice { parent: p1, start_off: s_off1, end_off: e_off1, reverse: rev1 }, CompositeType::Slice { parent: p2, start_off: s_off2, end_off: e_off2, reverse: rev2 }) => {
+				let res = p1 == p2 && s_off1 == s_off2 && e_off1 == e_off2 && rev1 == rev2;
+				Ok(BaseType::Int(res as i64))
+			},
 			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot compare {self:?} and {other:?}")))
 		}
 	}
@@ -134,13 +138,12 @@ impl CompositeType {
 				match parent {
 					CompositeType::Str(string) => {
 						let stringref = &string[*start_off..*end_off];
-						let mut charindex_iter = stringref.char_indices();
 						if *reverse {
-							let (index, ch) = charindex_iter.next().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
-							*start_off += index;
+							let ch = stringref.chars().next().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
+							*start_off += ch.len_utf8();
 							Ok(BaseType::Chr(ch))
 						} else {
-							let (index, ch) = charindex_iter.next_back().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
+							let (index, ch) = stringref.char_indices().next_back().ok_or(new_error(ErrorType::IllegalState, format!("Cannot 'pop' from empty slice.")))?;
 							*end_off = index + *start_off;
 							Ok(BaseType::Chr(ch))
 						}
@@ -155,21 +158,29 @@ impl CompositeType {
 		}
 	}
 
-	fn _verify_index(idx: i64, len: usize) -> Result<usize, FatalErr> {
+	fn _partial_verify_index(idx: &BaseType, len: usize) -> Result<usize, FatalErr> {
+		let idx = match idx {
+			BaseType::Int(i) => *i,
+			a => {return Err(new_error(ErrorType::TypeMismatch, format!("Cannot index with value {a}, must be Int")));}
+		};
 		let idx = if idx < 0 { idx + len as i64 } else {idx};
 		if idx < 0 {
 			return Err(new_error(ErrorType::InvalidIndex, format!("{idx}  < -{len}. Index is atleast -length")));
-		} 
-		let idx = idx as usize;
+		}
+		Ok(idx as usize)
+	}
+
+	fn _verify_index(idx: &BaseType, len: usize) -> Result<usize, FatalErr> {
+		let idx = Self::_partial_verify_index(idx, len)?;
 		if idx >= len {
 			return Err(new_error(ErrorType::InvalidIndex, format!("{idx} >= {len}. Index is strictly less than length.")))
 		};
 		Ok(idx)
 	}
 
-	fn _new_slice(s_off: i64, e_off: i64, len: usize) -> Result<(usize, usize, bool), FatalErr> {
-		let s_off = Self::_verify_index(s_off, len)?;
-		let e_off = Self::_verify_index(e_off, len)?;
+	fn _new_slice(s_off: &BaseType, e_off: &BaseType, len: usize) -> Result<(usize, usize, bool), FatalErr> {
+		let s_off = Self::_partial_verify_index(s_off, len).unwrap_or(0).min(len);
+		let e_off = Self::_partial_verify_index(e_off, len).unwrap_or(0).min(len);
 		if s_off > e_off {
 			Ok((e_off, s_off, true))
 		} else {
@@ -178,17 +189,9 @@ impl CompositeType {
 	}
 
 	pub(crate) fn slice(&self, s1: &BaseType, s2: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
-		let s_off = match s1 {
-			BaseType::Int(i) => *i,
-			a => {return Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice with value {a}, must be Int")));}
-		};
-		let e_off = match s2 {
-			BaseType::Int(i) => *i,
-			a => {return Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice with value {a}, must be Int")));}
-		};
 		match self {
 			CompositeType::Str(s) => {
-				let (s_off, e_off, rev) = Self::_new_slice(s_off, e_off, s.len())?;
+				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, s.len())?;
 				let parent = self as *const CompositeType;
 				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev};
 				refc.incref(parent)?;
@@ -197,7 +200,7 @@ impl CompositeType {
 			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
 				let len = end_off - start_off;
 				refc.incref(*parent)?;
-				let (s_off, e_off, rev) = Self::_new_slice(s_off, e_off, len)?;
+				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, len)?;
 				let ctype = if !reverse {
 					let real_s_off = start_off + s_off;
 					let real_e_off = start_off + e_off;
@@ -210,6 +213,34 @@ impl CompositeType {
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
 			a => Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice value {a}")))
+		}
+	}
+
+	fn  _get_index_unchecked(&self, index: usize) -> BaseType {
+		match self {
+			CompositeType::Str(s) => BaseType::Chr((s.as_bytes())[index] as char),
+			_ => panic!("Non-indexable composite-type somehow became parent of slice")
+		}
+	}
+
+	pub fn getindex(&self, idx: &BaseType) -> Result<BaseType, FatalErr> {
+		match self {
+			CompositeType::Str(s) => {
+				let index = Self::_verify_index(idx, s.len())?;
+				Ok(BaseType::Chr((s.as_bytes())[index] as char))
+			},
+			CompositeType::Slice { parent, start_off, end_off, reverse } => {
+				let index  = Self::_verify_index(idx, end_off - start_off)?;
+				let parent = unsafe{ parent.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{self} is NULL and cannot be referenced."))) }?;
+				if *reverse {
+					Ok(parent._get_index_unchecked(end_off - index))
+				} else {
+					Ok(parent._get_index_unchecked(start_off + index))
+				}
+			},
+			_ => {
+				Err(new_error(ErrorType::TypeMismatch, format!("{self} is not indexable")))
+			}
 		}
 	}
 }
@@ -539,6 +570,23 @@ pub fn as_printrepr(rv: &BaseType) -> Result<String,FatalErr> {
 			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?;
 			format!("{ctype}")
 		},
+		BaseType::Alloc(a) => {
+			let ctype = a.as_ref();
+			format!("{ctype}")
+		}
 		_ => format!("{rv}")
 	})
+}
+
+pub fn try_index(indexable: &BaseType, index_value: &BaseType) -> Result<BaseType, FatalErr> {
+	match indexable {
+		BaseType::ConstRef(ptr) => {
+			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{indexable} is NULL and cannot be referenced.")))}?;
+			ctype.getindex(index_value)
+		},
+		BaseType::MutRef(_ptr) => {
+			todo!("Add mutable indexing for List")
+		}
+		_ => Err(new_error(ErrorType::TypeMismatch, format!("{indexable} cannot be indexed")))
+	}
 }

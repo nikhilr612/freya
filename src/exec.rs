@@ -750,7 +750,8 @@ impl WorkerThread {
 					let s2 = cur_frame.read_register(qreg.s2)?;
 					let val = ctype.slice(s1, s2, &mut self.refc)?;
 					cur_frame.write_register(qreg.r1, val, &mut self.refc)?;
-				}
+				},
+				op::GETINDEX => instr_3arg!(types::try_index, slvw, cur_frame, &mut self.refc),
 				_ => {
 					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {:x} at offset {}", opcode, cur_frame.ip)));
 				}

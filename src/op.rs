@@ -121,12 +121,12 @@ pub const PUTINDEX: u8 = 0x62;
 /// Append a value to the end of list-like item.
 pub const PUSH: u8 = 0x63;
 /// Remove the last value of the list and store in register.
-/// r2 <- pop(r1)
+/// r2 <- r1.pop()
 pub const POP: u8 = 0x64;
 /// r2 <- r1.len()
 pub const LENGTH: u8 = 0x65;
 /// For list-like objects, create a view for sub-list.
-/// r4 <- r1[r2..r3]
+/// r1 <- r2[r3..r4]
 pub const SLICE: u8 = 0x66;
 
 /// stdcall r1, r2
@@ -275,6 +275,7 @@ pub fn triplet_mnemonic_map(head: &str) -> Option<u8> {
 		"rne" => Some(RNEQ),
 		"bls" => Some(LSHIFT),
 		"brs" => Some(RSHIFT),
+		"get" => Some(GETINDEX),
 		_ => None
 	}
 }
@@ -292,6 +293,9 @@ pub fn doublet_mnemonic_map(head: &str) -> Option<u8> {
 		"gline" =>Some(GETLN),
 		"s2int" => Some(PARSEINT),
 		"s2flt" => Some(PARSEFLT),
+		"push" => Some(PUSH),
+		"pop"  => Some(POP),
+		"len"=>Some(LENGTH),
 		_ => None
 	}
 }

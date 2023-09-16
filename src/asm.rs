@@ -377,6 +377,11 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			let res = lman.get_label(out, &args[1][1..])?;
 			out.write_u32(res).map_err(err_f)?;
 		}
+		else if line.starts_with("slice") {
+			arg_instr!(6, line, lman, 4, {(r1: 0, parse_reg), (r2: 1, parse_reg), (s1: 2, parse_reg), (s2: 3, parse_reg)});
+			out.write_u8(crate::op::SLICE).map_err(err_f)?;
+			crate::op::QuadrupleRegst {r1, r2, s1, s2}.write(out).map_err(err_f)?;
+		}
 		else {
 			let head = _get_instruction_head(&line)?;
 			let off = head.len() + 1;
