@@ -2,10 +2,10 @@ use std::ops::Rem;
 use std::ops::Mul;
 use std::ops::Sub;
 use std::ops::Add;
-
+use std::iter::zip;
 use core::fmt::Formatter;
 use core::fmt::Display;
-
+use std::cmp::Ordering;
 use crate::exec::RefCounter;
 
 #[derive(Debug)]
@@ -18,6 +18,7 @@ pub enum ErrorType {
 	InvalidOpcode,
 	InvalidRegister,
 	IllegalState,
+	IllegalValue,
 	EmptyRegister,
 	IncompleteInstr,
 	TypeMismatch,
@@ -78,26 +79,20 @@ impl CompositeType {
 		BaseType::Alloc(Box::new(CompositeType::FRef{mod_id: modid, func_idx: fid, unext: ext}))
 	}
 
-	pub fn lt(&self, other: &CompositeType) -> Result<BaseType, FatalErr> {
+	fn cmp(&self, other: &CompositeType) -> Result<Ordering, FatalErr> {
 		match (self, other) {
-			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(BaseType::Int((s1 < s2) as i64)),
-			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot compare {self:?} and {other:?}")))
-		}
-	}
-
-	pub fn gt(&self, other: &CompositeType) -> Result<BaseType, FatalErr> {
-		match (self, other) {
-			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(BaseType::Int((s1 > s2) as i64)),
-			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot compare {self:?} and {other:?}")))
-		}
-	}
-
-	pub fn eq(&self, other: &CompositeType) -> Result<BaseType, FatalErr> {
-		match (self, other) {
-			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(BaseType::Int((s1 == s2) as i64)),
+			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(s1.cmp(s2)),
 			(CompositeType::Slice { parent: p1, start_off: s_off1, end_off: e_off1, reverse: rev1 }, CompositeType::Slice { parent: p2, start_off: s_off2, end_off: e_off2, reverse: rev2 }) => {
-				let res = p1 == p2 && s_off1 == s_off2 && e_off1 == e_off2 && rev1 == rev2;
-				Ok(BaseType::Int(res as i64))
+				let p1 = unsafe{ p1.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("Slice is over a NULL parent."))) }?;
+				let p2 = unsafe{ p2.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("Slice is over a NULL parent."))) }?;
+				match (p1, p2) {
+					(CompositeType::Str(s1), CompositeType::Str(s2)) => {
+						let slice1 = &s1[*s_off1..*e_off1];
+						let slice2 = &s2[*s_off2..*e_off2];
+						Ok(order_with_rev(slice1.chars(), slice2.chars(), *rev1, *rev2)?.unwrap_or(slice1.len().cmp(&slice2.len())))
+					},
+					_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported comparison between {p1}, {p2}")))
+				}
 			},
 			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot compare {self:?} and {other:?}")))
 		}
@@ -447,7 +442,7 @@ pub fn try_bitwise_xor(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, Fatal
 	}
 }
 
-macro_rules! impl_rel_op {
+/*macro_rules! impl_rel_op {
 	($fname: ident, $func: ident, $ch: literal) => {
 		pub fn $fname (rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
 			match (rv1, rv2) {
@@ -466,15 +461,56 @@ macro_rules! impl_rel_op {
 			}
 		}
 	};
+}*/
+
+trait FallibleComparison {
+	fn try_compare(&self, other: &Self) -> Result<Ordering, FatalErr>;
+}
+
+impl FallibleComparison for BaseType {
+	fn try_compare(&self, rv2: &BaseType) -> Result<Ordering, FatalErr> {
+		match (self, rv2) {
+			(BaseType::Int(i1), BaseType::Int(i2)) => Ok(i1.cmp(i2)),
+			(BaseType::Flt(f1), BaseType::Flt(f2)) => f1.partial_cmp(f2).ok_or(new_error(ErrorType::IllegalValue, format!("Cannot compare {f1}, {f2}"))),
+			(BaseType::Flt(f1), BaseType::Int(i2)) => f1.partial_cmp(&(*i2 as f64)).ok_or(new_error(ErrorType::IllegalValue, format!("Cannot compare {f1}, {i2}"))),
+			(BaseType::Int(i1), BaseType::Flt(f2)) => (*i1 as f64).partial_cmp(f2).ok_or(new_error(ErrorType::IllegalValue, format!("Cannot compare {i1}, {f2}"))),
+			(BaseType::Chr(c1), BaseType::Chr(c2)) => Ok(c1.cmp(c2)),
+			(BaseType::Alloc(a1), BaseType::Alloc(a2)) => {a1.cmp(a2)},
+			(BaseType::ConstRef(a1), BaseType::ConstRef(a2)) => unsafe {
+				let a1 = a1.as_ref().unwrap();
+				let a2 = a2.as_ref().unwrap();
+				a1.cmp(a2)
+			},
+			_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported comparison between {self}, {rv2}")))
+		}
+	}
+}
+
+impl FallibleComparison for char {
+	fn try_compare(&self, other: &char) -> Result<Ordering, FatalErr> {
+		Ok(self.cmp(other))
+	}
 }
 
 impl_arith_op!(try_add, add, '+');
 impl_arith_op!(try_mul, mul, '*');
 impl_arith_op!(try_sub, sub, '-');
 impl_arith_op!(try_rem, rem, '%');
-impl_rel_op!(try_lt, lt, '<');
-impl_rel_op!(try_gt, gt, '>');
-impl_rel_op!(try_eq, eq, "==");
+
+macro_rules! impl_rel_op {
+	($fname: ident, $func: ident) => {
+		pub fn $fname (rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
+			let ord =rv1.try_compare(rv2)?;
+			Ok(BaseType::Int(ord.$func() as i64))
+		}
+	}
+}
+
+impl_rel_op!(try_lt, is_lt);
+impl_rel_op!(try_gt, is_gt);
+impl_rel_op!(try_eq, is_eq);
+impl_rel_op!(try_lte,is_le);
+impl_rel_op!(try_gte,is_ge);
 
 #[inline]
 pub fn try_neq(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
@@ -489,27 +525,6 @@ pub fn try_neq(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
 		_ => Ok(BaseType::Int(0))
 	}
 }
-
-macro_rules! impl_neg_op {
-	($fname: ident, $cfunc: ident, $ch: literal) => {
-		#[inline]
-		pub fn $fname(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
-			match $cfunc(rv1, rv2) {
-				Ok(b) => {
-					if let BaseType::Int(i1) = b {
-						Ok(BaseType::Int(1-i1))
-					} else {
-						Ok(BaseType::Int(0))
-					}
-				},
-				_ => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported \'{}\' between {rv1}, {rv2}", $ch)))
-			}
-		}
-	};
-}
-
-impl_neg_op!(try_lte, try_gt, "<=");
-impl_neg_op!(try_gte, try_lt, ">=");
 
 #[inline]
 pub fn try_lnot(rv1: &BaseType) -> Result<BaseType, FatalErr> {
@@ -588,5 +603,43 @@ pub fn try_index(indexable: &BaseType, index_value: &BaseType) -> Result<BaseTyp
 			todo!("Add mutable indexing for List")
 		}
 		_ => Err(new_error(ErrorType::TypeMismatch, format!("{indexable} cannot be indexed")))
+	}
+}
+
+fn _lexicographical_ordering<T: FallibleComparison, I, J>(iter1: I, iter2: J) -> Result<Option<Ordering>, FatalErr>
+	where
+		I: Iterator<Item = T>,
+		J: Iterator<Item = T>
+	 {
+	let dual = zip(iter1, iter2);
+	for (v1, v2) in dual {
+		let cmp = v1.try_compare(&v2)?;
+		if let Ordering::Equal = cmp {
+			continue;
+		} else {
+			return Ok(Some(cmp));
+		}
+	}
+	Ok(None)
+}
+
+fn order_with_rev<T: FallibleComparison, I: DoubleEndedIterator<Item = T>>(iter1: I, iter2: I, rev1: bool, rev2: bool) -> Result<Option<Ordering>, FatalErr> {
+	match (rev1, rev2) {
+		(true, true) => {
+			let iter1 = iter1.rev();
+			let iter2 = iter2.rev();
+			_lexicographical_ordering(iter1, iter2)
+		},
+		(true, false) => {
+			let iter1 = iter1.rev();
+			_lexicographical_ordering(iter1, iter2)	
+		},
+		(false, true) => {
+			let iter2 = iter2.rev();
+			_lexicographical_ordering(iter1, iter2)
+		},
+		(false, false) => {
+			_lexicographical_ordering(iter1, iter2)
+		}
 	}
 }
