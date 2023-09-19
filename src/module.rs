@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::path::Path;
 use std::sync::RwLockWriteGuard;
 
 use std::sync::RwLockReadGuard;
@@ -8,13 +10,18 @@ use crate::types::CompositeType;
 use crate::types::BaseType;
 use crate::types::ErrorType;
 use crate::types::FatalErr;
+use crate::types::new_error;
 
 use memmap2::Mmap;
 use std::fs::File;
 use std::collections::HashMap;
 
 pub const MAGIC: [u8; 4] = [0x3e, 0xb3, 0x14, 0x63];
-pub const FILEXT: &str = ".fr";
+#[cfg(windows)]
+pub const LIBRARYEXT: &str = "dll";
+#[cfg(unix)]
+pub const LIBRARYEXT: &str = "so";
+pub const FILEXT: &str = "fr";
 pub type FResult<T> = Result<T, FatalErr>;
 
 #[derive(Debug)]
@@ -40,10 +47,8 @@ pub struct ExternDecl {
 
 impl ExternDecl {
 	fn new_extern(mpath: &str, fn_name: &str) -> ExternDecl {
-		let mut mp = mpath.to_owned();
-		mp.push_str(FILEXT);
 		ExternDecl {
-			module_path: mp,
+			module_path: mpath.to_owned(),
 			func_name: fn_name.to_owned(),
 			module_id: 0,
 			function_id: 0,
@@ -147,6 +152,8 @@ pub struct ModulePool {
  	mlock: RwLock<Vec<Module>>,
  	/// Path map for modules
  	pathm: RwLock<HashMap<String, usize>>,
+ 	/// Paths to search for modules.
+ 	spath: Vec<Box<Path>>
  }
 
 pub type PoolReadGuard<'a> = RwLockReadGuard<'a, Vec<Module>>;
@@ -157,22 +164,46 @@ pub type PoolWriteGuard<'a> = RwLockWriteGuard<'a, Vec<Module>>;
  	pub fn new() -> ModulePool {
  		ModulePool {
  			mlock: RwLock::new(Vec::new()),
- 			pathm: RwLock::new(HashMap::new())
+ 			pathm: RwLock::new(HashMap::new()),
+ 			spath: Vec::new()
  		}
  	}
 
- 	pub fn load(&self, path: &str) -> FResult<()> {
- 		let mut pbuf = std::env::current_dir().map_err(|e| {
- 			let m = format!("Failed to create path to module {path}, cause {e:?}");
- 			crate::types::new_error(ErrorType::ModuleLoadFailure, m)
- 		})?;
- 		pbuf.push(path);
-   		let modules = &mut self.mlock.write().expect("Failed to acquire write lock for module vec.");
+ 	pub fn add_path(&mut self, path: &Path) {
+ 		if path.exists() {
+ 			self.spath.push(path.into());
+ 		} // Don't care about paths that don't exist.
+ 	}
 
+ 	pub fn resolve_path(&self, path: &str) -> FResult<(PathBuf, bool)> {
+ 		let mut buf = PathBuf::new();
+ 		for dirpath in self.spath.iter() {
+ 			buf.push(dirpath);
+ 			buf.push(Path::new(path));
+ 			buf.set_extension(FILEXT);
+ 			if buf.as_path().exists() {
+ 				return Ok((buf, false));
+ 			}
+ 			buf.set_extension(LIBRARYEXT);
+ 			if buf.as_path().exists() {
+ 				return Ok((buf, true));
+ 			}
+ 		}
+ 		Err(crate::types::new_error(ErrorType::NoSuchModule, format!("Module or library {path} not found in available paths.")))
+ 	}
+
+ 	pub fn load(&mut self, path: &str) -> FResult<()> {
+ 		let (pbuf, is_native) = self.resolve_path(path)?;
+
+ 		if is_native {
+ 			todo!("Native Libraries have not been implemented yet.")
+ 		}
+
+   		let modules = self.mlock.get_mut().map_err(|e| new_error(ErrorType::InternalFailure, format!("ModulePool RwLock 'mlock' is poisoned\n\tcause: {e}")))?;
  		let module = open(pbuf.to_str().unwrap())?;
  		modules.push(module);
 
- 		let pathmp = &mut self.pathm.write().expect("Failed to acquire write lock for path map.");
+ 		let pathmp = self.pathm.get_mut().map_err(|e| new_error(ErrorType::InternalFailure, format!("ModulePool RwLock 'pathm' is poisoned\n\tcause: {e}")))?;
  		pathmp.insert(path.to_string(), modules.len()-1);
 
  		return Ok(())

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::io::Write;
 use std::io::BufReader;
@@ -14,29 +15,42 @@ mod utils;
 mod asm;
 //pub mod native;
 
+macro_rules! on_error_exit_gracefully {
+    ($res: ident) => {
+        match $res {
+            Ok(()) => {},
+            Err(_) => {
+                eprintln!("VM Panicked on error.");
+                return;
+            }
+        }
+    };
+}
+
 fn main() {
     let cli = args::MainArgs::parse();
     match cli.command {
         args::Commands::VerifyHeader {path} => {
             println!("{:#?}", module::open(&path));
         },
-        args::Commands::ExecNoArg {path} => {
-            let mp = Arc::new(module::ModulePool::new());
-            mp.load(&path).map_err(|e| {
-                eprintln!("Failed to open module, {e:}")
-            }).unwrap();
+        args::Commands::ExecNoArg {filepath, pathlist} => {
+            let mut mp = module::ModulePool::new();
+            for path in pathlist {
+                mp.add_path(Path::new(&path));
+            }
+            mp.add_path(std::env::current_dir().expect("Failed to read current working directory path").as_path());
+            let res = mp.load(&filepath).map_err(|e| {
+                eprintln!("{e:}")
+            });
+            let mp = Arc::new(mp);
+            on_error_exit_gracefully!(res);
             let ep = cli.entry_pt.unwrap_or("main".to_string());
-            let mut wt = exec::WorkerThread::new(&path, &ep, cli.refctl, mp.clone());
+            let mut wt = exec::WorkerThread::new(&filepath, &ep, cli.refctl, mp.clone());
             let res = wt.begin().map_err(|e| {
                 eprintln!("{}", e);
                 wt.print_stack_trace();
             });
-            match res {
-                Ok(()) => {}
-                Err(_) => {
-                    eprintln!("VM Panicked on error.");
-                }
-            }
+            on_error_exit_gracefully!(res);
         },
         args::Commands::Assemble {path, output} => {
             let file = File::open(&path).expect("Failed to open file");

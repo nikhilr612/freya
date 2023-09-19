@@ -33,6 +33,7 @@ pub enum ErrorType {
 	InvalidCall,
 	NullPointer,
 	InvalidIndex,
+	InternalFailure,
 	NativeError
 }
 

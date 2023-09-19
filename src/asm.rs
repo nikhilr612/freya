@@ -13,6 +13,7 @@ struct LabelManager {
 	label_map: HashMap<String, Option<u64>>,
 	label_refs: Vec<(String, u64)>,
 	func_map: HashMap<String, (u64, Option<u64>, usize)>,
+	extrn_map: HashMap<String, u16>,
 	const_map: HashMap<String, u16>,
 	fcount: usize
 }
@@ -24,6 +25,7 @@ impl LabelManager {
 			label_refs: Vec::new(),
 			func_map: HashMap::new(),
 			const_map: HashMap::new(),
+			extrn_map: HashMap::new(), 
 			fcount: 0
 		}
 	}
@@ -35,10 +37,22 @@ impl LabelManager {
 		Ok(())
 	}
 
+	fn put_extern(&mut self, elabel: &str) {
+		let len = self.extrn_map.len();
+		self.extrn_map.insert(elabel.to_owned(), len.try_into().expect("At most 65535 extern declarations."));
+	}
+
 	fn get_func_idx(&self, name: &str) -> Result<usize, String> {
 		match self.func_map.get(name) {
 			Some((_,_,idx)) => Ok(*idx),
 			None => Err(format!("No function with label \'{name}\'"))
+		}
+	}
+
+	fn get_extern_idx(&self, name: &str) -> Result<u16, String> {
+		match self.extrn_map.get(name) {
+			Some(idx) => Ok(*idx),
+			None => Err(format!("No extern with label \'{name}\'"))
 		}
 	}
 
@@ -121,6 +135,8 @@ pub fn _get_instruction_head(line: &str) -> Result<&str, String> {
 	let idx = match line.find(' ') {Some(u) => u, None => {return Err("Unrecognized syntax".to_string());}};
 	Ok(&line[0..idx])
 }
+
+// TODO: Remove `.collect()` everywhere, and replace with .next()
 
 macro_rules! arg_instr {
 	($end:expr, $line: ident, $lman: ident, $narg: literal, {$(($n: ident : $idx: literal, $func: ident)),*}) => {
@@ -232,9 +248,13 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			if mode != 2 {
 				return Err("Cannot declare external reference outside extern".to_owned())
 			}
-			let path = &line[4..];
+			let end = line.rfind(",").ok_or("Incomplete extern declaration. Extern label missing.")?;
+			let path = &line[4..end];
 			out.write_u16(path.len().try_into().expect("Path length cannot exceed 65535")).map_err(err_f)?;
 			out.write_str(path).map_err(err_f)?;
+			let end = line.rfind("@").ok_or("Label is mandatory for extern declarations.")?;
+			let name = &line[(end+1)..];
+			lman.put_extern(name);
 		}
 		else if line.starts_with(".fdecl") {
 			mode = 1;
@@ -311,8 +331,10 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 		else if line.starts_with("ldx") {
 			out.write_u8(crate::op::LDX).map_err(err_f)?;
 			let vec: Vec<&str> = line[4..].split(", ").collect();
-			//dbg!(&vec);
-			let id = parse_constid(vec[0], &lman)?;
+			if !vec[0].starts_with("@") {
+				return Err("Cannot load extern without appropriate label.".to_owned())
+			}
+			let id = lman.get_extern_idx(&vec[0][1..])?;
 			let r1 = parse_reg(vec[1], &lman)?;
 			let instr = crate::op::Id16Reg {id, r1};
 			instr.write(out).map_err(err_f)?;

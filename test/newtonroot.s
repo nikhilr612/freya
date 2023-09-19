@@ -1,35 +1,15 @@
-.cpool 2
-	f64 1e-3, $Delta
+.cpool 1
 	f64 0.6, $StartVal
 
-.extern 0
+.extern 1
+	.ef test/mathutil:diff_fn, @diff_fn
 
 # Apply newton's root approximation method to solve numerically, f(x) = 0
-.fdecl 4
-	.df diff_fn, 2, 4, @diff_fn
+.fdecl 3
 	.df target_fn, 1, 2, @target_fn
 	.df main, 0, 4, @main
 	.df findroot, 3, 5, @findroot
 .code
-
-# %0 - FRef object, %1 - location, %2 & %3 - arithmetic registers
-# Use symmetric form: diff(f) = [f(x+h) - f(x-h)]/2h
-diff_fn:
-	ldc $Delta, %2
-	add %1, %2, %2
-	# r2 = x+h, r2 <- f(r2) = f(x+h)
-	stdcall %0, %3, %2
-	ldc $Delta, %3
-	sub %1, %3, %3
-	# r3 = x-h, r3 <- f(r2) = f(x-h)
-	stdcall %0, %4, %3
-	# r2 = f(x+h), r3 = f(x-h), r2 <- r2 - r3 = f(x+h) - f(x-h)
-	sub %2, %3, %2
-	ldc $Delta, %3
-	add %3, %3, %3
-	# r2 = f(x+h)-f(x-h), r3 = 2*h, r2 <- r2 / r3 = [f(x+h)-f(x-h)]/2h
-	div %2, %3, %2
-	ret %2
 
 # Target function: x*2^x -1
 # %0 - x, %1 - arithmetic register
@@ -46,7 +26,7 @@ target_fn:
 findroot:
 	# If the required number of iterations are complete, then return.
 	branch %1, @end_algo
-		ldf @diff_fn, %3
+		ldx @diff_fn, %3
 		# r4 <- r3 (r0, r2) = diff_fn(f, x_n) = f'(x_n)
 		stdcall %3, %5, %0, %2
 		# if f'(x_n) == 0, then we cannot apply algorithm.

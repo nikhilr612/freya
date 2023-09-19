@@ -28,8 +28,14 @@ pub enum Commands {
 	#[clap(alias = "vh")]
 	VerifyHeader { path: String },
 	/// Load and execute the given file.
-	#[clap(alias = "ena")]
-	ExecNoArg {path: String},
+	#[clap(alias = "ex")]
+	ExecNoArg {
+		/// Path to the file which needs to be executed.
+		filepath: String,
+		#[arg(short, long)]
+		/// List of directories to include in search path for resolving modules.
+		pathlist: Vec<String>
+	},
 	#[clap(alias = "asm")]
 	/// Assemble a source file to bytecode. If debug flag is set, then line numbers are emitted.
 	Assemble { 

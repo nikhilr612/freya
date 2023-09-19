@@ -370,12 +370,11 @@ fn _prep_fcall(pool: &ModulePool, mod_id: usize, func_idx: usize, unext: bool) -
 			fid = mvec[mid].func_id(&ext.func_name)?;
 		} else {
 			// Write, without acquiring another lock.
-			let mut pbuf = std::env::current_dir().map_err(|e| {
- 				let m = format!("Failed to create path to module {}, cause {e:?}", ext.module_path);
- 				crate::types::new_error(ErrorType::ModuleLoadFailure, m)
- 			})?;
  			let path = ext.module_path.clone();
- 			pbuf.push(path.clone());
+ 			let (pbuf, is_native) = pool.resolve_path(&path)?;
+ 			if is_native {
+ 				todo!("Re-write this section to load and resolve native libraries when loaded. This is unexpected rn.")
+ 			}
  			let module = crate::module::open(pbuf.to_str().unwrap())?;
  			fid = module.func_id(&ext.func_name)?;
  			mvec.push(module);
