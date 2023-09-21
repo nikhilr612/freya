@@ -6,7 +6,7 @@
 /// 4. Arithmetic instructions: 0x3_
 /// 5. Relational operators, conditional branching related instructions: 0x4_
 /// 6. Debug related instructions: 0x5_
-/// 7. Index-related instructions: 0x6_
+/// 7. Allocation, and Index-related instructions: 0x6_
 
 use crate::utils::AsBytes;
 use crate::utils::OutBuf;
@@ -111,9 +111,10 @@ pub const NOP: u8 = 0x50;
 pub const DBGLN: u8 = 0x51;
 /// if !r then raise error, otherwise no-op
 pub const ASSERT: u8 = 0x52;
-
+/// r1 <- []
+pub const NEWLIST: u8 = 0x60;
 /// r3 <- r1[r2]
-pub const GETINDEX: u8   = 0x60;
+pub const GETINDEX: u8   = 0x61;
 /// r1[r2] <- r3
 pub const PUTINDEX: u8 = 0x62;
 /// push r1, r2
@@ -198,8 +199,8 @@ impl TryFrom<&mut SliceView<'_>> for VariadicRegst {
 		if sl.bytes_left() < size {
 			return Err(crate::types::new_error(ErrorType::IncompleteInstr, format!("Expecting {size} bytes for variadic instruction, found {} at offset {}", sl.bytes_left(), sl.offset())));
 		}
-		for i in 0..size {
-			rvec[i] = sl.get_u8();
+		for r in rvec.iter_mut() {
+			*r = sl.get_u8();
 		}
 		Ok(VariadicRegst {regs: rvec})
 	}
@@ -307,6 +308,7 @@ pub fn singlet_mnemonic_map(head: &str) -> Option<u8> {
 		"incr1" => Some(INC1),
 		"lnot"  => Some(LNOT),
 		"drop"  => Some(DROP),
+		"newl"  => Some(NEWLIST),
 		_ => None
 	}
 }

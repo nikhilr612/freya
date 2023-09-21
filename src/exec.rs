@@ -48,7 +48,7 @@ impl CallFrame {
 			rslot: None,
 			function_id: fnid,
 			debug_lnum: 0,
-			ip: ip
+			ip
 		}
 	}
 
@@ -68,7 +68,7 @@ impl CallFrame {
 			rslot: None,
 			function_id: fid,
 			debug_lnum: 0,
-			ip: ip
+			ip
 		}, n)
 	}
 
@@ -80,7 +80,7 @@ impl CallFrame {
 		Ok(r)
 	}
 
-	fn read_register<'a>(&self, r: u8) -> FResult<&BaseType> {
+	fn read_register(&self, r: u8) -> FResult<&BaseType> {
 		let r = self.get_reg_id(r)?;
 		let rval = match &self.regs[r] {
 			Some(r) => r,
@@ -91,7 +91,7 @@ impl CallFrame {
 		Ok(rval)
 	}
 
-	fn read_mutregst<'a>(&mut self, r: u8) -> FResult<&mut BaseType> {
+	fn read_mutregst(&mut self, r: u8) -> FResult<&mut BaseType> {
 		let r = self.get_reg_id(r)?;
 		let rval = match &mut self.regs[r] {
 			Some(r) => r,
@@ -130,7 +130,7 @@ impl CallFrame {
 
 	fn _take_register(&mut self, r1: usize, rc: &mut RefCounter) -> FResult<Option<BaseType>> {
 		let btp = &self.regs[r1];
-		if let None = btp {
+		if btp.is_none() {
 			return Ok(None);
 		}
 		let btp = btp.as_ref().unwrap();
@@ -174,6 +174,13 @@ impl CallFrame {
 			types::CompositeType::Slice { parent, ..} => {
 				// Has an immutable reference to parent object. Drop that reference.
 				refc.decref(parent)?;
+			},
+			types::CompositeType::List(v) => {
+				// Cleanup all sub-objects / values
+				for value in v {
+					Self::cleanup_value(value, refc)?
+					// value is dropped.
+				}
 			}
 			/*,_ => {
 				unimplemented!()
@@ -205,10 +212,8 @@ impl CallFrame {
 	}
 
 	fn release(self, rc: &mut RefCounter) -> FResult<()> {
-		for r in self.regs {
-			if let Some(val) = r {
-				Self::cleanup_value(val, rc)?;
-			}
+		for val in self.regs.into_iter().flatten() {
+			Self::cleanup_value(val, rc)?;
 		}
 		Ok(())
 	}
@@ -292,7 +297,7 @@ impl RefCounter {
 				return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
 			}
 		}
-		return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")));
+		Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
 	}
 
 	/// Decrement the reference count of mutable references to an object.
@@ -310,7 +315,7 @@ impl RefCounter {
 				return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
 			}
 		}
-		return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
+		Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")))
 	}
 
 	/// Get the number of active immutable and mutable references for a given composite type.
@@ -393,8 +398,8 @@ fn _prep_fcall(pool: &ModulePool, mod_id: usize, func_idx: usize, unext: bool) -
 
 #[inline]
 /// A call is deemed a 'tail-call' if:
-/// -	it is immediately followed by a `VRET` (in all cases)
-/// -	it is immediately followed by a `return <current return register>` (if call doesn't discard return value)
+/// -    it is immediately followed by a `VRET` (in all cases)
+/// -    it is immediately followed by a `return <current return register>` (if call doesn't discard return value)
 fn _check_tailcall(slvw: &mut crate::utils::SliceView, rslot: Option<u8>) -> bool {
 	let nextinstr = slvw.get_u8();
 	if nextinstr == op::VRET {
@@ -407,22 +412,22 @@ fn _check_tailcall(slvw: &mut crate::utils::SliceView, rslot: Option<u8>) -> boo
 		}
 		
 	}
-	return false;
+	false
 }
 
 fn _extract_finfo(val: &BaseType) -> FResult<(usize, usize, bool)>{
 	if let BaseType::Alloc(cpt) = val {
 		if let types::CompositeType::FRef { mod_id, func_idx, unext} = &**cpt {
-			return Ok((*mod_id, *func_idx, *unext));
+			Ok((*mod_id, *func_idx, *unext))
 		} else {
-			return Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")));
+			Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")))
 		}
 	} else {
-		return Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")));
+		Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")))
 	}
 }
 
-fn _make_frame(mut param: Vec<Option<BaseType>>, pool: &ModulePool, mid: usize, fid: usize) -> FResult<CallFrame> {
+fn _make_frame(param: Vec<Option<BaseType>>, pool: &ModulePool, mid: usize, fid: usize) -> FResult<CallFrame> {
 	let (mut new_frame, narg) = CallFrame::from_fnid(pool, mid, fid);
 	if param.len() != narg {
 		let mvec = pool.read_lock();
@@ -430,8 +435,8 @@ fn _make_frame(mut param: Vec<Option<BaseType>>, pool: &ModulePool, mid: usize, 
 		return Err(new_error(ErrorType::InvalidCall, format!("Function {name} requires {narg} parameters, but {} arguments were supplied.", param.len())));
 	}
 	// Put args.
-	for i in 0..param.len() {
-		new_frame.regs[i] = param[i].take();
+	for (i, pval) in param.into_iter().enumerate() {
+		new_frame.regs[i] = pval;
 	}
 	Ok(new_frame)
 }
@@ -470,7 +475,7 @@ macro_rules! instr_2arg {
 }
 
 impl WorkerThread {
-	pub fn new<'a>(mpath: &str, ep: &str, refp: u8, mp: Arc<ModulePool>) -> WorkerThread {
+	pub fn new(mpath: &str, ep: &str, refp: u8, mp: Arc<ModulePool>) -> WorkerThread {
 		let cf = CallFrame::from_fdecl(&mp, mpath, ep);
 		let mut stack = Vec::new();
 		let refp = match refp {
@@ -482,7 +487,7 @@ impl WorkerThread {
 		stack.push(cf);	// Load main onto stack.
 		WorkerThread {
 			refc: RefCounter::new(refp),
-			stack: stack,
+			stack,
 			pool: mp
 		}
 	}
@@ -504,7 +509,7 @@ impl WorkerThread {
 
 	/// Begin execution.
 	pub fn begin(&mut self) -> FResult<()> {
-		while self.stack.len() > 0 {
+		while !self.stack.is_empty() {
 			let stack_top = self.stack.len() -1;
 			let cur_frame = &mut self.stack[stack_top];
 			let module_pool_vec_read = self.pool.read_lock();
@@ -520,7 +525,7 @@ impl WorkerThread {
 				op::RET => {
 					let r1 = slvw.get_u8();
 					let mut frame = self.stack.pop().expect("Cannot pop empty call stack.\n\tComment: Ultimate cockup.");
-					if self.stack.len() > 0 {	
+					if !self.stack.is_empty() {	
 						let cur_frame = &mut self.stack[stack_top-1];
 						if let Some(ret_reg) = cur_frame.rslot {
 							let val = frame._take_unchecked(r1)?;
@@ -636,7 +641,7 @@ impl WorkerThread {
 					}
 				}
 				op::STDCALL => {
-					// Read instruction
+					// Read instruction					
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
 					cur_frame.rslot = if dreg.r2 != 0 {Some(dreg.r2-1)} else {None};
 					let rparam = op::VariadicRegst::try_from(&mut slvw)?;
@@ -655,7 +660,8 @@ impl WorkerThread {
 					let val = cur_frame.read_register(dreg.r1)?;
 					let (mod_id, func_idx, unext) = _extract_finfo(val)?;
 
-					std::mem::drop(slvw); std::mem::drop(cur_frame); std::mem::drop(cur_module); std::mem::drop(module_pool_vec_read); // Explicit drops for clarity.
+					std::mem::drop(module_pool_vec_read);
+
 					let (mid, fid) = _prep_fcall(&self.pool,mod_id, func_idx, unext)?;
 					// eprintln!("call fn, {mid}:{fid} with {param:?}");
 					let new_frame = _make_frame(param, &self.pool, mid, fid)?;
@@ -739,7 +745,7 @@ impl WorkerThread {
 				op::POP => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
 					let rval = cur_frame.read_mutregst(dreg.r1)?;
-					let wval = types::as_composite_type_mut(rval, &self.refc)?.pop()?;
+					let wval = types::as_composite_type_mut(rval, &self.refc)?.pop(&mut self.refc)?;
 					cur_frame.write_register(dreg.r2, wval, &mut self.refc)?;
 				},
 				op::SLICE => {
@@ -750,7 +756,18 @@ impl WorkerThread {
 					let val = ctype.slice(s1, s2, &mut self.refc)?;
 					cur_frame.write_register(qreg.r1, val, &mut self.refc)?;
 				},
-				op::GETINDEX => instr_3arg!(types::try_index, slvw, cur_frame, &mut self.refc),
+				op::GETINDEX => {
+					let treg = op::TripleRegst::try_from(&mut slvw)?;
+					let rv1  = cur_frame.read_register(treg.r1)?;
+					let rvi  = cur_frame.read_register(treg.r2)?;
+					let val  = types::try_index(rv1, rvi, &mut self.refc)?;
+					cur_frame.write_register(treg.r3, val, &mut self.refc)?;
+				},
+				op::NEWLIST => {
+					let reg = slvw.get_u8();
+					let val = BaseType::Alloc(Box::new(types::CompositeType::List(Vec::new())));
+					cur_frame.write_register(reg, val, &mut self.refc)?;
+				},
 				_ => {
 					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {:x} at offset {}", opcode, cur_frame.ip)));
 				}

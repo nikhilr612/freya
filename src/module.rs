@@ -25,11 +25,28 @@ pub const FILEXT: &str = "fr";
 pub type FResult<T> = Result<T, FatalErr>;
 
 #[derive(Debug)]
+#[repr(u8)]
+/// Enum to denote state of extern declarations.
 pub enum ResolutionStatus {
 	Resolved,
 	Unresolved,
-	Native
+	//Native
 }
+
+#[derive(Debug)]
+/// Alternative value enum.
+/// Convert BaseType to ConstantValue to send value across thread.
+/// Used to ensure that BaseType is explicitly not Send or Sync.
+pub enum ConstantValue {
+	Int(i64),
+	Flt(f64),
+	Chr(char),
+	/// The only object allowed in constant pool is heap-allocated strings.
+	Obj(Box<CompositeType>)
+}
+
+unsafe impl Send for ConstantValue {}
+unsafe impl Sync for ConstantValue {}
 
 #[derive(Debug)]
 pub struct ExternDecl {
@@ -58,10 +75,7 @@ impl ExternDecl {
 
 	#[inline]
 	pub fn resolved(&self) -> bool {
-		match &self.status {
-			ResolutionStatus::Resolved => true,
-			_ => false
-		}
+		matches!(&self.status, ResolutionStatus::Resolved)
 	}
 }
 
@@ -78,7 +92,7 @@ pub struct Module {
 	/// The full name of the module. This is usually the path of the module.
 	pub(crate) name: String,
 	/// Vector of all constants in constant pool.
-	constant_pool: Vec<BaseType>,
+	constant_pool: Vec<ConstantValue>,
 	/// Map of function name to index.
 	funcname_map: HashMap<String, usize>,
 	/// Vector to index function declaration information
@@ -130,15 +144,14 @@ pub struct Module {
 
  	pub(crate) fn clone_constant(&self, idx: usize, wt: &mut RefCounter) -> Option<BaseType> {
  		match &self.constant_pool[idx] {
- 			BaseType::Int(i1) => Some(BaseType::Int(*i1)),
- 			BaseType::Flt(f1) => Some(BaseType::Flt(*f1)),
- 			BaseType::Chr(ch) => Some(BaseType::Chr(*ch)),
- 			BaseType::Alloc(bx) => {
+ 			ConstantValue::Int(i1) => Some(BaseType::Int(*i1)),
+ 			ConstantValue::Flt(f1) => Some(BaseType::Flt(*f1)),
+ 			ConstantValue::Chr(ch) => Some(BaseType::Chr(*ch)),
+ 			ConstantValue::Obj(bx) => {
  				let ptr = bx.as_ref() as *const CompositeType;
  				wt.incref(ptr).map_err(|e| {eprintln!("massive cockup: {}\n\tAn object from the constant pool must only have immutable references. Anything else reeks of blunder.", e);}).unwrap();
  				Some(BaseType::ConstRef(ptr)) 				
- 			},
- 			_ => None
+ 			}
  		}
  	}
  }
@@ -206,7 +219,7 @@ pub type PoolWriteGuard<'a> = RwLockWriteGuard<'a, Vec<Module>>;
  		let pathmp = self.pathm.get_mut().map_err(|e| new_error(ErrorType::InternalFailure, format!("ModulePool RwLock 'pathm' is poisoned\n\tcause: {e}")))?;
  		pathmp.insert(path.to_string(), modules.len()-1);
 
- 		return Ok(())
+ 		Ok(())
  	}
 
  	/// Return the id of a module
@@ -218,10 +231,10 @@ pub type PoolWriteGuard<'a> = RwLockWriteGuard<'a, Vec<Module>>;
  				return Err(crate::types::new_error(ErrorType::NoSuchModule, format!("Module path: {path} has not been loaded into the pool.")));
  			}
  		};
- 		return Ok(idx);
+ 		Ok(idx)
  	}
 
- 	pub fn read_lock<'a>(&self) -> PoolReadGuard {
+ 	pub fn read_lock(&self) -> PoolReadGuard {
  		self.mlock.read().expect("Failed to acquire read lock for module vec.")
  	}
 
@@ -276,11 +289,11 @@ pub fn open(fpath: &str) -> FResult<Module> {
 	for _i in 0..vlen {
 		match view.get_u8() {
 			1 => {
-				cpool.push(BaseType::Int(view.get_u64() as i64));
+				cpool.push(ConstantValue::Int(view.get_u64() as i64));
 			},
 			2 => {
 				let val = f64::from_bits(view.get_u64());
-				cpool.push(BaseType::Flt(val));
+				cpool.push(ConstantValue::Flt(val));
 			},
 			3 => {
 				let rval = view.get_u32();
@@ -290,13 +303,13 @@ pub fn open(fpath: &str) -> FResult<Module> {
 						return Err(crate::types::new_error(ErrorType::UtfDecodeError, format!("Value {:x} is not a valid Unicode scalar", rval)));
 					}
 				};
-				cpool.push(BaseType::Chr(val));
+				cpool.push(ConstantValue::Chr(val));
 			},
 			4 => {
 				let len = view.get_u16() as usize;
 				let s = view.decode_utf8(len)?;
 				let bx = Box::new(CompositeType::Str(s));
-				cpool.push(BaseType::Alloc(bx));
+				cpool.push(ConstantValue::Obj(bx));
 			},
 			_ => {
 				return Err(crate::types::new_error(ErrorType::ModuleLoadFailure, "Invalid type id for constant pool"));

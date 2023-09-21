@@ -4,8 +4,8 @@
 .extern 0
 
 .fdecl 2
-	.df diff_fn, 2, 4, @diff_fn
-	.df intg_fn, 3, 6, @intg_fn 
+	.df derivative_at, 2, 4, @diff_fn
+	.df integral_on, 3, 6, @intg_fn 
 
 .code
 

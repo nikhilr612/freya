@@ -2,7 +2,7 @@
 	f64 0.6, $StartVal
 
 .extern 1
-	.ef test/mathutil:diff_fn, @diff_fn
+	.ef test/mathutil:derivative_at, @diff_fn
 
 # Apply newton's root approximation method to solve numerically, f(x) = 0
 .fdecl 3
@@ -22,7 +22,7 @@ target_fn:
 	sub %0, %1, %0
 	ret %0
 
-# $0 - Fref, %1 - n, %2 - x_n, %3 & %4 - temporary registers
+# %0 - Fref, %1 - n, %2 - x_n, %3 & %4 - temporary registers
 findroot:
 	# If the required number of iterations are complete, then return.
 	branch %1, @end_algo

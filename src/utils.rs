@@ -13,7 +13,7 @@ impl SliceView<'_> {
 	pub fn wrap(st: usize, buf: &[u8]) -> SliceView {
 		SliceView {
 			idx: st,
-			buf: buf
+			buf
 		}
 	}
 

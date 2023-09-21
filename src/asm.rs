@@ -82,26 +82,26 @@ impl LabelManager {
 		if self.label_map.contains_key(label) {
 			let (k,v) = self.label_map.get_key_value(label).unwrap();
 			if let Some(l) = v {
-				return Ok(*l as u32);
+				Ok(*l as u32)
 			} else {
 				let cpos = writer.stream_position().map_err(|e| {format!("Failed to read file position at label {} ref\n\tcaused by {:?}", label, e)})?;
 				self.label_refs.push((k.to_string(), cpos));
-				return Ok(0);
+				Ok(0)
 			}
 		} else {
 			self.label_map.insert(label.to_owned(), None);
 			let cpos = writer.stream_position().map_err(|e| {format!("Failed to read file position at label {} ref\n\tcaused by {:?}", label, e)})?;
 			self.label_refs.push((label.to_owned(), cpos));
-			return Ok(0);
+			Ok(0)
 		}
 	}
 }
 
 fn parse_intlit(lit: &str) -> Result<isize, String> {
-	if lit.starts_with("0x") {
-		return isize::from_str_radix(&lit[2..], 16).map_err(|e| {format!("Failed to parse hex {},\n\tcaused by {:?}", lit, e)})
+	if let Some(stripped) = lit.strip_prefix("0x") {
+		isize::from_str_radix(stripped, 16).map_err(|e| {format!("Failed to parse hex {},\n\tcaused by {:?}", lit, e)})
 	} else {
-		return isize::from_str_radix(&lit, 10).map_err(|e| {format!("Failed to parse decimal {},\n\tcaused by {:?}", lit, e)})
+		lit.parse::<isize>().map_err(|e| {format!("Failed to parse decimal {},\n\tcaused by {:?}", lit, e)})
 	}
 }
 
@@ -110,24 +110,24 @@ fn parse_fltlit(lit: &str) -> Result<f64, String> {
 }
 
 fn parse_reg(lit: &str, _: &LabelManager) -> Result<u8, String>{
-	if lit.starts_with("%") {
-		let rv = parse_intlit(&lit[1..])?;
-		return Ok((rv & 0xff) as u8);
+	if let Some(stripped) = lit.strip_prefix('%') {
+		let rv = parse_intlit(stripped)?;
+		Ok((rv & 0xff) as u8)
 	} else {
-		return Err(format!("Expecting register value found {}, try prefixing with '%'", lit));
+		Err(format!("Expecting register value found {}, try prefixing with '%'", lit))
 	}
 }
 
 fn parse_constid(lit: &str, lman: &LabelManager) -> Result<u16, String> {
-	if lit.starts_with("$") {
-		match lman.const_map.get(&lit[1..]) {
+	if let Some(stripped) = lit.strip_prefix('$') {
+		match lman.const_map.get(stripped) {
 			Some(id) => Ok(*id),
 			None => {
 				Err(format!("No such constant {}", lit))
 			}
 		}
 	} else {
-		Ok(parse_intlit(&lit)? as u16)
+		Ok(parse_intlit(lit)? as u16)
 	}
 }
 
@@ -159,7 +159,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			break;
 		}
 		let line = line_mut.trim();
-		if line.starts_with("#") || line.len() == 0 {
+		if line.starts_with('#') || line.is_empty() {
 			// Do nothing
 		}
 		else if line.starts_with(".cpool") {
@@ -172,7 +172,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 				return Err("Cannot specify constants outside constant pool.".to_owned())
 			}
 			let vec: Vec<&str> = line[4..].split(", ").collect();
-			if vec.len() < 1 {
+			if vec.is_empty() {
 				return Err("Missing parameters; literal value and optional name".to_owned())
 			}
 			let val = parse_fltlit(vec[0])?;
@@ -188,7 +188,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 				return Err("Cannot specify constants outside constant pool.".to_owned())
 			}
 			let vec: Vec<&str> = line[4..].split(", ").collect();
-			if vec.len() < 1 {
+			if vec.is_empty() {
 				return Err("Missing parameters; literal value and optional name".to_owned())
 			}
 			let val = parse_intlit(vec[0])? as u64;
@@ -199,12 +199,12 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			out.write_u64(val).map_err(err_f)?;
 			const_id += 1;
 		}
-		else if line.starts_with("char") {
+		else if let Some(stripped) = line.strip_prefix("char") {
 			if mode != 3 {
 				return Err("Cannot specify constants outside constant pool.".to_owned())
 			}
-			let vec: Vec<&str> = line[4..].split(", ").collect();
-			if vec.len() < 1 {
+			let vec: Vec<&str> = stripped.split(", ").collect();
+			if vec.is_empty() {
 				return Err("Missing parameters; literal value and optional name".to_owned())
 			}
 			let val = line.chars().nth(5).unwrap() as u32;
@@ -226,14 +226,11 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			out.write_u16(strtw.len() as u16).map_err(err_f)?;
 			out.write_str(strtw).map_err(err_f)?;
 			let vn = line.rfind('$');
-			match vn {
-				Some(i) => {
-					if i > en {
-						lman.def_const_name(&line[(i+1)..], const_id);
-					}
-				},
-				None => {}
-			};
+			if let Some(i) = vn {
+   				if i > en {
+   					lman.def_const_name(&line[(i+1)..], const_id);
+   				}
+   			};
 			const_id += 1;
 		}
 		else if line.starts_with(".extern") {
@@ -248,11 +245,11 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			if mode != 2 {
 				return Err("Cannot declare external reference outside extern".to_owned())
 			}
-			let end = line.rfind(",").ok_or("Incomplete extern declaration. Extern label missing.")?;
+			let end = line.rfind(',').ok_or("Incomplete extern declaration. Extern label missing.")?;
 			let path = &line[4..end];
 			out.write_u16(path.len().try_into().expect("Path length cannot exceed 65535")).map_err(err_f)?;
 			out.write_str(path).map_err(err_f)?;
-			let end = line.rfind("@").ok_or("Label is mandatory for extern declarations.")?;
+			let end = line.rfind('@').ok_or("Label is mandatory for extern declarations.")?;
 			let name = &line[(end+1)..];
 			lman.put_extern(name);
 		}
@@ -274,7 +271,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			out.write_u8(parse_intlit(vec[1])? as u8).map_err(err_f)?;
 			out.write_u8(parse_intlit(vec[2])? as u8).map_err(err_f)?;
 			//dbg!(&line,&vec);
-			if vec[3].starts_with("@") {
+			if vec[3].starts_with('@') {
 				lman.put_func(out, &vec[3][1..])?;
 				out.write_u32(0).map_err(err_f)?;
 			} else {
@@ -284,8 +281,8 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 		else if line.starts_with(".code") {
 			mode = 0;
 		}
-		else if line.ends_with(":") {
-			let fst = line.split(' ').next().unwrap().replace(":","");
+		else if line.ends_with(':') {
+			let fst = line.split(' ').next().unwrap().replace(':',"");
 			lman.def_label(out, &fst)?;
 		}
 		else if line.starts_with(".clr") {
@@ -331,7 +328,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 		else if line.starts_with("ldx") {
 			out.write_u8(crate::op::LDX).map_err(err_f)?;
 			let vec: Vec<&str> = line[4..].split(", ").collect();
-			if !vec[0].starts_with("@") {
+			if !vec[0].starts_with('@') {
 				return Err("Cannot load extern without appropriate label.".to_owned())
 			}
 			let id = lman.get_extern_idx(&vec[0][1..])?;
@@ -342,7 +339,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 		else if line.starts_with("ldf") {
 			out.write_u8(crate::op::LDF).map_err(err_f)?;
 			let vec: Vec<&str> = line[4..].split(", ").collect();
-			if !vec[0].starts_with("@") {
+			if !vec[0].starts_with('@') {
 				return Err("Cannot load function without appropriate label.".to_owned())
 			}
 			let r1 = parse_reg(vec[1], &lman)?;
@@ -391,7 +388,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 		else if line.starts_with("branch") {
 			let args: Vec<&str> = line[7..].split(", ").collect();
 			let r1 = parse_reg(args[0], &lman)?;
-			if !args[1].starts_with("@") {
+			if !args[1].starts_with('@') {
 				return Err("Branch to unlabelled code point is not allowed.".to_string());
 			}
 			out.write_u8(crate::op::BRANCH).map_err(err_f)?;
@@ -405,27 +402,23 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			crate::op::QuadrupleRegst {r1, r2, s1, s2}.write(out).map_err(err_f)?;
 		}
 		else {
-			let head = _get_instruction_head(&line)?;
+			let head = _get_instruction_head(line)?;
 			let off = head.len() + 1;
 			if let Some(opc) = crate::op::triplet_mnemonic_map(head) {
 				arg_instr!(off, line, lman, 3, {(r1: 0, parse_reg), (r2: 1, parse_reg), (r3: 2, parse_reg)});
 				out.write_u8(opc).map_err(err_f)?;
 				let instr = crate::op::TripleRegst {r1, r2, r3};
 				instr.write(out).map_err(err_f)?;
+			} else if let Some(opc) = crate::op::doublet_mnemonic_map(head) {
+				arg_instr!(off, line, lman, 2, {(r1: 0, parse_reg), (r2: 1, parse_reg)});
+				out.write_u8(opc).map_err(err_f)?;
+				crate::op::DoubleRegst {r1, r2}.write(out).map_err(err_f)?;
+			} else if let Some(opc) = crate::op::singlet_mnemonic_map(head) {
+				let r1 = parse_reg(&line[off..], &lman)?;
+				out.write_u8(opc).map_err(err_f)?;
+				out.write_u8(r1).map_err(err_f)?;
 			} else {
-				if let Some(opc) = crate::op::doublet_mnemonic_map(head) {
-					arg_instr!(off, line, lman, 2, {(r1: 0, parse_reg), (r2: 1, parse_reg)});
-					out.write_u8(opc).map_err(err_f)?;
-					crate::op::DoubleRegst {r1, r2}.write(out).map_err(err_f)?;
-				} else {
-					if let Some(opc) = crate::op::singlet_mnemonic_map(head) {
-						let r1 = parse_reg(&line[off..], &lman)?;
-						out.write_u8(opc).map_err(err_f)?;
-						out.write_u8(r1).map_err(err_f)?;
-					} else {
-						return Err(format!("Unrecognized syntax."));
-					}
-				}
+				return Err("Unrecognized syntax.".to_string());
 			}
 		}
 		*lno += 1;
