@@ -12,7 +12,6 @@ There are seven base types:
 4. `Alloc`: An owned allocation to an object on the Heap.
 5. `ConstRef`: An immutable reference to an object.
 6. `MutRef`: A mutable reference to an object.
-7. `OpaqueHandle`\*: An unsigned pointer-width integer intended for use by Native APIs to return opaque pointers / handles.
 
 The following are the composite types:
 1. `Str`: A rust `String`
@@ -32,6 +31,12 @@ Values are 'dropped' or 'deallocated' as per the following:
 Composite types on the heap can be referred to by `ConstRef` and `MutRef` which are immutable and mutable references respectively, as per the following:
 - There cannot be multiple mutable references to the same object.
 - Immutable references and mutable reference of the same object cannot co-exist.
+
+# Planned Features
+- [ ] Partially applied functions
+- [ ] Dictionaries or HashMaps
+- [ ] Native support (FFI)
+- [ ] Multithreading with message passing
 
 # Dependencies
 1. [clap](https://github.com/clap-rs/clap): Used for declarative generation of the command-line arguments parser

@@ -35,9 +35,10 @@ pub enum ResolutionStatus {
 
 #[derive(Debug)]
 /// Alternative value enum.
-/// Convert BaseType to ConstantValue to send value across thread.
+/// Convert BaseType to ConstantValue to send value across threads; and explicitly requires verification of the entire object tree.
+/// ConstantValue -> BaseType is a trivial copy, but BaseType -> ConstantValue is a tree search.
 /// Used to ensure that BaseType is explicitly not Send or Sync.
-pub enum ConstantValue {
+pub(crate) enum ConstantValue {
 	Int(i64),
 	Flt(f64),
 	Chr(char),

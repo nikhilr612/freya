@@ -107,10 +107,11 @@ pub const JUMP: u8 = 0x4a;
 
 /// No-op instruction. Does nothing.
 pub const NOP: u8 = 0x50;
-/// No-op instruction, used for debugging . Sets the debug line number in the current stack frame.
+/// Sets the debug line number in the current stack frame.
 pub const DBGLN: u8 = 0x51;
-/// if !r then raise error, otherwise no-op
+/// if !r then raise error, otherwise pass
 pub const ASSERT: u8 = 0x52;
+
 /// r1 <- []
 pub const NEWLIST: u8 = 0x60;
 /// r3 <- r1[r2]
@@ -129,6 +130,13 @@ pub const LENGTH: u8 = 0x65;
 /// For list-like objects, create a view for sub-list.
 /// r1 <- r2[r3..r4]
 pub const SLICE: u8 = 0x66;
+/// For list-like objects, create a view for the whole list.
+/// Equivalent to slice[0..len], where len is the length of the list-like object.
+pub const FSLICE: u8 = 0x67;
+/// Reverse slice or list-like object in-place
+pub const REVERSE:u8 = 0x68;
+/// r1 <- Str()
+pub const NEWSTR: u8 = 0x69;
 
 /// stdcall r1, r2
 pub const STDCALL: u8 = 0x12;
@@ -277,6 +285,7 @@ pub fn triplet_mnemonic_map(head: &str) -> Option<u8> {
 		"bls" => Some(LSHIFT),
 		"brs" => Some(RSHIFT),
 		"get" => Some(GETINDEX),
+		"put" => Some(PUTINDEX),
 		_ => None
 	}
 }
@@ -294,9 +303,10 @@ pub fn doublet_mnemonic_map(head: &str) -> Option<u8> {
 		"gline" =>Some(GETLN),
 		"s2int" => Some(PARSEINT),
 		"s2flt" => Some(PARSEFLT),
+		"fslice"=>Some(FSLICE),
 		"push" => Some(PUSH),
 		"pop"  => Some(POP),
-		"len"=>Some(LENGTH),
+		"len" =>Some(LENGTH),
 		_ => None
 	}
 }
@@ -308,7 +318,9 @@ pub fn singlet_mnemonic_map(head: &str) -> Option<u8> {
 		"incr1" => Some(INC1),
 		"lnot"  => Some(LNOT),
 		"drop"  => Some(DROP),
-		"newl"  => Some(NEWLIST),
+		"newls" => Some(NEWLIST),
+		"newst" => Some(NEWSTR),
+		"revrs" => Some(REVERSE), 
 		_ => None
 	}
 }

@@ -28,7 +28,7 @@ pub enum Commands {
 	#[clap(alias = "vh")]
 	VerifyHeader { path: String },
 	/// Load and execute the given file.
-	#[clap(alias = "ex")]
+	#[clap(alias = "x")]
 	ExecNoArg {
 		/// Path to the file which needs to be executed.
 		filepath: String,

@@ -6,8 +6,9 @@ use crate::module::ModulePool;
 use crate::module::FResult;
 use crate::module::ResolutionStatus;
 use crate::types::BaseType;
-
+use crate::types::FatalErr;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use crate::types::new_error;
 use crate::types::ErrorType;
@@ -102,7 +103,7 @@ impl CallFrame {
 		Ok(rval)	
 	}
 
-	fn write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
+	fn _write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
 		if let Some(btype) = self.regs[rid].take() {
 			Self::cleanup_value(btype, rc)?;
 		}
@@ -112,20 +113,19 @@ impl CallFrame {
 
 	fn write_register(&mut self, r: u8, val: BaseType, rc: &mut RefCounter) -> FResult<()> {
 		let rid = self.get_reg_id(r)?;
-		self.write_unchecked(rid, Some(val), rc)
+		self._write_unchecked(rid, Some(val), rc)
 	}
 
 	fn drop_register(&mut self, r: u8, rc: &mut RefCounter) -> FResult<()> {
 		let rid = self.get_reg_id(r)?;
-		self.write_unchecked(rid, None, rc)
+		self._write_unchecked(rid, None, rc)
 	}
 
 	fn move_register(&mut self, r1: u8, r2: u8, rc: &mut RefCounter) -> FResult<()> {
-		// TODO: Re-implement using _take_register
 		let r1 = self.get_reg_id(r1)?;
 		let v1 = self._take_register(r1, rc)?;
 		let r2 = self.get_reg_id(r2)?;
-		self.write_unchecked(r2, v1, rc)
+		self._write_unchecked(r2, v1, rc)
 	}
 
 	fn _take_register(&mut self, r1: usize, rc: &mut RefCounter) -> FResult<Option<BaseType>> {
@@ -134,6 +134,7 @@ impl CallFrame {
 			return Ok(None);
 		}
 		let btp = btp.as_ref().unwrap();
+		// TOOD: Remove duplicate base type copy code
 		let ret = 
 			match btp {
 				BaseType::Int(v) => {BaseType::Int(*v)},
@@ -211,8 +212,24 @@ impl CallFrame {
 		Ok(self.regs[r1].take())
 	}
 
-	fn release(self, rc: &mut RefCounter) -> FResult<()> {
-		for val in self.regs.into_iter().flatten() {
+	fn release(mut self, rc: &mut RefCounter) -> FResult<()> {
+		// Double-pass, drop all references first, ...
+		for r in self.regs.iter_mut() {
+			let val = match r {
+				None => continue,
+				Some(v) => v
+			};
+			match val {
+				BaseType::ConstRef(ptr) => { rc.decref(*ptr)?; },
+				BaseType::MutRef(ptr) => {rc.decref_mut(*ptr)?;},
+				// Anything else, drop in second pass
+				_ => {continue;}
+			}
+			// Since r had a reference, which has now been dropped, we should skip it in next loop.
+			*r = None;
+		}
+		// ... then drop the remaining regsiters starting from the back.
+		for val in self.regs.into_iter().rev().flatten() {
 			Self::cleanup_value(val, rc)?;
 		}
 		Ok(())
@@ -241,21 +258,34 @@ impl RefCounter {
 		}
 	}
 
+	#[inline(always)]
+	fn error_or_warn(&self, err: FatalErr) -> FResult<()> {
+		if let RefPolicy::WarnOnly = self.refp {
+			eprintln!("WARNING: {}", err.message());
+			Ok(())
+		} else {
+			Err(err)
+		}
+	}
+
 	/// Increment the reference count of immutable references to an object.
 	pub fn incref(&mut self, ptr: *const types::CompositeType) -> FResult<()> {
 		if let RefPolicy::Inactive = self.refp {
 			return Ok(())
 		}
 		let addr = ptr as usize;
-		if self.refctr.contains_key(&addr) {
+		// Use Entry API to avoid double hash computation, at cost of pointer clone
+		if let Entry::Vacant(e) = self.refctr.entry(addr) {
+			e.insert((1, 0));
+		} else {
 			let tup = self.refctr.get_mut(&addr).unwrap();
 			tup.0 += 1;
 			if tup.1 != 0 {
 				let r = unsafe {&*ptr};
-				return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{r}, has an active mutable reference, and hence cannot acquire an immutable reference.")));
+				let err = types::new_error(ErrorType::CoincidentRef, 
+					format!("@{addr:x}:{r}, has an active mutable reference, and hence cannot acquire an immutable reference."));
+				return self.error_or_warn(err);
 			}
-		} else {
-			self.refctr.insert(addr, (1, 0));
 		}
 		Ok(())
 	}
@@ -266,18 +296,19 @@ impl RefCounter {
 			return Ok(())
 		}
 		let addr = ptr as usize;
-		if self.refctr.contains_key(&addr) {
+		if let Entry::Vacant(e) = self.refctr.entry(addr) {
+			e.insert((0, 1));
+		} else {
 			let tup = self.refctr.get_mut(&addr).unwrap();
 			let r = unsafe {&*ptr};
 			if tup.0 > 0 {
-				return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{r}, has {} active immutable reference(s), and hence cannot acquire mutable reference.", tup.0)));
+				let err = types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{r}, has {} active immutable reference(s), and hence cannot acquire mutable reference.", tup.0));
+				return self.error_or_warn(err);
 			}
 			if tup.1 > 0 {
-				return Err(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{r} already has an active mutable reference.")));
+				return self.error_or_warn(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{r} already has an active mutable reference.")));
 			}
 			tup.1 = 1;
-		} else {
-			self.refctr.insert(addr, (0, 1));
 		}
 		Ok(())
 	}
@@ -294,10 +325,10 @@ impl RefCounter {
 				tup.0 -= 1;
 				return Ok(());
 			} else {
-				return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
+				return self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
 			}
 		}
-		Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
+		self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
 	}
 
 	/// Decrement the reference count of mutable references to an object.
@@ -312,10 +343,10 @@ impl RefCounter {
 				tup.1 -= 1;
 				return Ok(());
 			} else {
-				return Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
+				return self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
 			}
 		}
-		Err(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")))
+		self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")))
 	}
 
 	/// Get the number of active immutable and mutable references for a given composite type.
@@ -333,7 +364,7 @@ impl RefCounter {
 		let (_, mcount) = self.count_of(value);
 		let addr = (value as *const types::CompositeType) as usize;
 		if mcount > 0 {
-			return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has an active mutable reference, hence cannot acquire immutable reference.")));
+			return self.error_or_warn(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has an active mutable reference, hence cannot acquire immutable reference.")));
 		}
 		Ok(())
 	}
@@ -343,9 +374,9 @@ impl RefCounter {
 		let (icount, mcount) = self.count_of(value);
 		let addr = (value as *const types::CompositeType) as usize;
 		if icount > 0 {
-			return Err(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has active immutable reference(s), hence cannot acquire mutable reference.")));
+			return self.error_or_warn(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has active immutable reference(s), hence cannot acquire mutable reference.")));
 		} else if mcount > 0 {
-			return Err(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{value} already has an active mutable reference")));
+			return self.error_or_warn(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{value} already has an active mutable reference")));
 		}
 		Ok(())
 	}
@@ -530,7 +561,7 @@ impl WorkerThread {
 						if let Some(ret_reg) = cur_frame.rslot {
 							let val = frame._take_unchecked(r1)?;
 							let ret_reg = ret_reg as usize;
-							cur_frame.write_unchecked(ret_reg, val, &mut self.refc)?;
+							cur_frame._write_unchecked(ret_reg, val, &mut self.refc)?;
 							cur_frame.rslot = None;
 						}
 					}
@@ -663,14 +694,14 @@ impl WorkerThread {
 					std::mem::drop(module_pool_vec_read);
 
 					let (mid, fid) = _prep_fcall(&self.pool,mod_id, func_idx, unext)?;
-					// eprintln!("call fn, {mid}:{fid} with {param:?}");
 					let new_frame = _make_frame(param, &self.pool, mid, fid)?;
 
 					if !is_tc {
 						self.stack.push(new_frame);	    // Push a new frame in the normal case.
 					} else {
-						let idx = self.stack.len() -1;
-						self.stack[idx] = new_frame;	// Overwrite frame in case of tail-call.s
+						let idx = self.stack.len() -1; 
+						let old_frame = std::mem::replace(&mut self.stack[idx], new_frame);	// Replace the top-most frame in case of tail-call,
+						old_frame.release(&mut self.refc)?									// and release the old frame
 					}
 
 					continue;
@@ -731,10 +762,16 @@ impl WorkerThread {
 					BaseType::Int(i64::from_str(text).map_err(|_| {new_error(ErrorType::ParsingFailure, format!("Could not parse \"{text}\" as Flt"))})?)
 				}),
 				op::GETLN => instr_2arg!(slvw, cur_frame, self.refc, |val| {BaseType::Alloc(Box::new(types::CompositeType::Str(_get_line(&types::as_printrepr(val)?))))}),
-				op::LENGTH => instr_2arg!(slvw, cur_frame, self.refc, |val| {types::as_composite_type(val, &self.refc)?.length()?}),
+				op::LENGTH => instr_2arg!(slvw, cur_frame, self.refc, |val| {BaseType::Int((types::as_composite_type(val, &self.refc)?.length()?) as i64)}),
 				op::BNOT => instr_2arg!(slvw, cur_frame, self.refc, |rval| { match rval {BaseType::Int(i1) => BaseType::Int(!*i1),_ => {return Err(types::new_error(ErrorType::TypeMismatch, format!("Unsupported bitwise not on {rval}")));}}}),
 				op::FLOOR => instr_2arg!(slvw, cur_frame, self.refc, |rval| {types::try_floor(rval).ok_or(types::new_error(ErrorType::TypeMismatch, format!("Unsupported 'floor' on {rval}")))?}),
 				op::ISN0 => instr_2arg!(slvw, cur_frame, self.refc, |rv| {if types::as_bool(rv) {types::BaseType::Int(1)} else {types::BaseType::Int(0)}}),
+				op::FSLICE=>instr_2arg!(slvw, cur_frame, self.refc, |rv| {types::as_composite_type(rv, &self.refc)?.full_slice(&mut self.refc)?}),
+				op::REVERSE => {
+					let r1 = slvw.get_u8();
+					let rval = cur_frame.read_mutregst(r1)?;
+					types::as_composite_type_mut(rval, &self.refc)?.reverse_in_place()?
+				}
 				op::PUSH => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
 					let r2 = cur_frame.get_reg_id(dreg.r2)?;
@@ -763,13 +800,28 @@ impl WorkerThread {
 					let val  = types::try_index(rv1, rvi, &mut self.refc)?;
 					cur_frame.write_register(treg.r3, val, &mut self.refc)?;
 				},
+				op::PUTINDEX => {
+					let treg = op::TripleRegst::try_from(&mut slvw)?;
+					let r3 = cur_frame.get_reg_id(treg.r3)?;
+					let r2 = cur_frame.get_reg_id(treg.r2)?;
+					let rval = cur_frame._take_register(r3, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
+					let idxv = cur_frame._take_register(r2, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
+					let ctyp = cur_frame.read_mutregst(treg.r1)?;
+					cur_frame.regs[r3] = types::try_putindex(ctyp, &idxv, rval)?; // regs[r3] is None, so no need to write, or drop check
+					cur_frame.regs[r2] = Some(idxv);							  // Move the index back.
+				},
 				op::NEWLIST => {
 					let reg = slvw.get_u8();
 					let val = BaseType::Alloc(Box::new(types::CompositeType::List(Vec::new())));
 					cur_frame.write_register(reg, val, &mut self.refc)?;
 				},
+				op::NEWSTR => {
+					let reg = slvw.get_u8();
+					let val = BaseType::Alloc(Box::new(types::CompositeType::Str(String::new())));
+					cur_frame.write_register(reg, val, &mut self.refc)?; 
+				},
 				_ => {
-					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {:x} at offset {}", opcode, cur_frame.ip)));
+					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {opcode:x}")));
 				}
 			}
 			cur_frame.ip =slvw.offset();

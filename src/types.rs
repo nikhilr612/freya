@@ -47,6 +47,12 @@ pub fn new_error(errt: ErrorType, msg: impl Into<String>) -> FatalErr {
 	}
 }
 
+impl FatalErr {
+	pub(crate) fn message(&self) -> &str {
+		&self.msg
+	}
+}
+
 impl Display for FatalErr {
 	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
 		write!(fmt, "Error [{:?}]: {}", self.error_t, self.msg)
@@ -97,16 +103,16 @@ impl CompositeType {
 		}
 	}
 
-	pub fn length(&self) -> Result<BaseType, FatalErr> {
+	pub fn length(&self) -> Result<usize, FatalErr> {
 		match self {
 			CompositeType::Str(s) => {
-				Ok(BaseType::Int(s.len() as i64))
+				Ok(s.len())
 			},
 			CompositeType::List(v) => {
-				Ok(BaseType::Int(v.len() as i64))
+				Ok(v.len())
 			},
 			CompositeType::Slice{parent: _, start_off, end_off, ..} => {
-				Ok(BaseType::Int((end_off - start_off) as i64))
+				Ok(end_off - start_off)
 			},
 			CompositeType::FRef {..} => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'length' on {self:?}")))
 		}
@@ -154,12 +160,12 @@ impl CompositeType {
 					},
 					CompositeType::List(v) => {
 						if *reverse {
-							*end_off -= 1;
-							_copy_or_borrow(v.get(*end_off).ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?, refc)
-						} else {
 							let res = _copy_or_borrow(v.get(*start_off).ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?, refc);
 							*start_off += 1;
 							res
+						} else {
+							*end_off -= 1;
+							_copy_or_borrow(v.get(*end_off).ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?, refc)
 						}
 					},
 					// TODO: Add List Slices.
@@ -218,6 +224,13 @@ impl CompositeType {
 				refc.incref(parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
+			CompositeType::List(v) => {
+				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, v.len())?;
+				let parent = self as *const CompositeType;
+				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev};
+				refc.incref(parent)?;
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
 			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
 				let len = end_off - start_off;
 				refc.incref(*parent)?;
@@ -237,6 +250,45 @@ impl CompositeType {
 		}
 	}
 
+	pub(crate) fn full_slice(&self, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
+		match self {
+			CompositeType::List(v) => {
+				let len = v.len();
+				let parent = self as *const CompositeType;
+				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false};
+				refc.incref(parent)?;
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
+			CompositeType::Str(s) => {
+				let len = s.len();
+				let parent = self as *const CompositeType;
+				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false};
+				refc.incref(parent)?;
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
+			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
+				let ctype = CompositeType::Slice {parent: *parent, start_off: *start_off, end_off: *end_off, reverse: *reverse};
+				refc.incref(*parent)?;
+				Ok(BaseType::Alloc(Box::new(ctype)))
+			},
+			a => Err(new_error(ErrorType::TypeMismatch, format!("Cannot slice value {a}")))
+		}
+	}
+
+	pub(crate) fn reverse_in_place(&mut self) -> Result<(), FatalErr> {
+		match self {
+			CompositeType::List(v) => {
+				v.reverse();
+				Ok(())
+			},
+			CompositeType::Slice {parent: _, start_off: _, end_off: _, reverse} => {
+				*reverse = !(*reverse);
+				Ok(())
+			},
+			a => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported in-place reversal of {a}")))
+		}
+	}
+
 	fn  _get_index_unchecked(&self, index: usize, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
 		match self {
 			CompositeType::Str(s) => Ok(BaseType::Chr((s.as_bytes())[index] as char)),
@@ -245,7 +297,7 @@ impl CompositeType {
 		}
 	}
 
-	pub(crate) fn getindex(&self, idx: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
+	fn getindex(&self, idx: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
 		match self {
 			CompositeType::Str(s) => {
 				let index = Self::_verify_index(idx, s.len())?;
@@ -253,7 +305,7 @@ impl CompositeType {
 			},
 			CompositeType::Slice { parent, start_off, end_off, reverse } => {
 				let index  = Self::_verify_index(idx, end_off - start_off)?;
-				let parent = unsafe{ parent.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{self} is NULL and cannot be referenced."))) }?;
+				let parent = unsafe_deref(*parent, self)?;
 				if *reverse {
 					parent._get_index_unchecked(end_off - index, refc)
 				} else {
@@ -266,6 +318,38 @@ impl CompositeType {
 			},
 			_ => {
 				Err(new_error(ErrorType::TypeMismatch, format!("{self} is not indexable")))
+			}
+		}
+	}
+
+	fn getindex_mut(&mut self, idx: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
+		match self {
+			CompositeType::List(v) => {
+				let index = Self::_verify_index(idx, v.len())?;
+				_copy_or_borrow_mut(&mut v[index], refc)
+			},
+			CompositeType::Str(s)  => {
+				// Identical to get_index, just for convenience.
+				let index = Self::_verify_index(idx, s.len())?;
+				Ok(BaseType::Chr((s.as_bytes())[index] as char))
+			},
+			_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot index {self} via mutable reference.")))
+		}
+	}
+
+	/// Set value at given index and return the previous value, if any, for cleanup
+	fn putindex(&mut self, idx: &BaseType, value: BaseType) -> Result<Option<BaseType>, FatalErr> {
+		match self {
+			CompositeType::List(v) => {
+				let index = Self::_verify_index(idx, v.len())?;
+				let v = std::mem::replace(&mut v[index], value);
+				Ok(Some(v))
+			},
+			CompositeType::Str(_) => {
+				Err(new_error(ErrorType::TypeMismatch, "Overwriting contents of UTF-8 byte string at arbitrary indices is generally unsafe."))
+			},
+			_ => {
+				Err(new_error(ErrorType::TypeMismatch, format!("Cannot set value at index for {self}")))
 			}
 		}
 	}
@@ -310,7 +394,7 @@ impl Display for CompositeType {
 						display_list_slice(fmt, &vec[*start_off..*end_off])
 					}
 					// TODO: Add List slices
-					CompositeType::Slice {..} | CompositeType::FRef {..} => panic!("Slices cannot have any parents other than Str or List.")
+					a => panic!("Slices cannot have any parents other than Str or List. {a}")
 				}
 			},
 			CompositeType::List(vec) => { display_list_slice(fmt, vec) },
@@ -492,6 +576,27 @@ fn _copy_or_borrow(val: &BaseType, refc: &mut RefCounter) -> Result<BaseType, Fa
 	}
 }
 
+/// Attempt to copy the contents of this value.
+/// Fails if base type is MutRef or OpaqueHandle.
+fn _copy_or_borrow_mut(val: &mut BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
+	match val {
+		BaseType::Int(i1) => Ok(BaseType::Int(*i1)),
+ 		BaseType::Flt(f1) => Ok(BaseType::Flt(*f1)),
+ 		BaseType::Chr(ch) => Ok(BaseType::Chr(*ch)),
+ 		BaseType::ConstRef(ptr) => {
+ 			let ptr = *ptr;
+ 			refc.incref(ptr)?;
+ 			Ok(BaseType::ConstRef(ptr))
+ 		},
+ 		BaseType::Alloc(a)=> {
+ 			let aref = a.as_mut() as *mut CompositeType;
+ 			refc.incref_mut(aref)?;
+ 			Ok(BaseType::MutRef(aref))
+ 		},
+ 		_ => Err(new_error(ErrorType::TypeMismatch, format!("{val} can neither be copied nor borrowed")))
+	}
+}
+
 trait FallibleComparison {
 	fn try_compare(self, other: Self) -> Result<Ordering, FatalErr>;
 }
@@ -578,6 +683,15 @@ pub fn as_bool(rv: &BaseType) -> bool {
 		BaseType::Int(i1) => {*i1 != 0},
 		BaseType::Flt(f1) => {*f1 != 0.0},
 		BaseType::Chr(c1) => {*c1 != '\0'},
+		BaseType::Alloc(a) => {
+			let a = a.as_ref();
+			match a {
+				CompositeType::Str(s) => !s.is_empty(),
+				CompositeType::List(v)=> !v.is_empty(),
+				CompositeType::Slice {parent: _, start_off, end_off, reverse: _} => start_off < end_off,
+				_ => true
+			}
+		}
 		_ => true
 	}
 }
@@ -588,7 +702,7 @@ pub(crate) fn as_composite_type<'a>(rv: &'a BaseType, refc: &RefCounter) -> Resu
 			a.as_ref()
 		},
 		BaseType::ConstRef(ptr) => {
-			unsafe{ ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced."))) }?
+			unsafe_deref(*ptr, rv)?
 		},
 		_ => { return Err(new_error(ErrorType::TypeMismatch, format!("{rv} is NOT a composite type."))) }
 	};
@@ -604,7 +718,7 @@ pub(crate) fn as_composite_type_mut<'a>(rv: &'a mut BaseType, refc: &RefCounter)
 			Ok(mref)
 		},
 		BaseType::MutRef(ptr) => {
-			Ok(unsafe { ptr.as_mut().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?)
+			Ok(unsafe_deref_mut(*ptr, rv)?)
 		},
 		_ => { Err(new_error(ErrorType::TypeMismatch, format!("{rv} is NOT a composite type."))) }
 	}
@@ -614,7 +728,7 @@ pub(crate) fn as_composite_type_mut<'a>(rv: &'a mut BaseType, refc: &RefCounter)
 pub fn as_printrepr(rv: &BaseType) -> Result<String,FatalErr> {
 	Ok(match rv {
 		BaseType::ConstRef(ptr) => {
-			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{rv} is NULL and cannot be referenced.")))}?;
+			let ctype = unsafe_deref(*ptr, rv)?;
 			format!("{ctype}")
 		},
 		BaseType::Alloc(a) => {
@@ -625,16 +739,37 @@ pub fn as_printrepr(rv: &BaseType) -> Result<String,FatalErr> {
 	})
 }
 
+#[inline(always)]
+fn unsafe_deref<A,B: Display>(ptr: *const A, value: &B) -> Result<&A, FatalErr> {
+	unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{value} is NULL and cannot be referenced."))) }
+}
+
+#[inline(always)]
+fn unsafe_deref_mut<A, B:Display>(ptr: *mut A, value: &B) -> Result<&mut A, FatalErr> {
+	unsafe { ptr.as_mut().ok_or(new_error(ErrorType::NullPointer, format!("{value} is NULL and cannot be referenced."))) }
+}
+
 pub(crate) fn try_index(indexable: &BaseType, index_value: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
 	match indexable {
 		BaseType::ConstRef(ptr) => {
-			let ctype = unsafe { ptr.as_ref().ok_or(new_error(ErrorType::NullPointer, format!("{indexable} is NULL and cannot be referenced.")))}?;
+			let ctype = unsafe_deref(*ptr, indexable)?;
 			ctype.getindex(index_value, refc)
 		},
-		BaseType::MutRef(_ptr) => {
-			todo!("Add mutable indexing for List")
+		BaseType::MutRef(ptr) => {
+			let ctype = unsafe_deref_mut(*ptr, indexable)?;
+			ctype.getindex_mut(index_value, refc)
 		}
 		_ => Err(new_error(ErrorType::TypeMismatch, format!("{indexable} cannot be indexed")))
+	}
+}
+
+pub(crate) fn try_putindex(indexable: &mut BaseType, index_value: &BaseType, value: BaseType) -> Result<Option<BaseType>,FatalErr> {
+	match indexable {
+		BaseType::MutRef(ptr) => {
+			let ctype = unsafe_deref_mut(*ptr, indexable)?;
+			ctype.putindex(index_value, value)
+		},
+		_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot set value at index for {indexable} without mutable reference")))
 	}
 }
 

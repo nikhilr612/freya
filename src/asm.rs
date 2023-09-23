@@ -401,6 +401,9 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			out.write_u8(crate::op::SLICE).map_err(err_f)?;
 			crate::op::QuadrupleRegst {r1, r2, s1, s2}.write(out).map_err(err_f)?;
 		}
+		else if line.starts_with("nop") {
+			out.write_u8(crate::op::NOP).map_err(err_f)?;
+		}
 		else {
 			let head = _get_instruction_head(line)?;
 			let off = head.len() + 1;
