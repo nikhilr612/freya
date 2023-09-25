@@ -74,13 +74,13 @@ pub enum CompositeType {
 	FRef {
 		mod_id: usize,
 		func_idx: usize,
-		unext: bool
+		// unext: bool
 	},
 }
 
 impl CompositeType {
-	pub fn new_fref(modid: usize, fid: usize, ext: bool) -> BaseType {
-		BaseType::Alloc(Box::new(CompositeType::FRef{mod_id: modid, func_idx: fid, unext: ext}))
+	pub fn new_fref(modid: usize, fid: usize) -> BaseType {
+		BaseType::Alloc(Box::new(CompositeType::FRef{mod_id: modid, func_idx: fid}))
 	}
 
 	fn cmp(&self, other: &CompositeType) -> Result<Ordering, FatalErr> {

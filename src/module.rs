@@ -28,7 +28,10 @@ pub type FResult<T> = Result<T, FatalErr>;
 #[repr(u8)]
 /// Enum to denote state of extern declarations.
 pub enum ResolutionStatus {
+	/// An extern-decl in resolved, iff the module being referred to is loaded and the extern has been 'touched' alteast once.
 	Resolved,
+	/// An extern-decl is unresolved, until it is 'touched' whereupon the status is changed to 'resolved'.
+	/// The actual module externed may be loaded into the pool already; if it is, the function is located, otherwise the module is loaded.
 	Unresolved,
 	//Native
 }
@@ -72,11 +75,6 @@ impl ExternDecl {
 			function_id: 0,
 			status: ResolutionStatus::Unresolved
 		}
-	}
-
-	#[inline]
-	pub fn resolved(&self) -> bool {
-		matches!(&self.status, ResolutionStatus::Resolved)
 	}
 }
 
@@ -126,14 +124,14 @@ pub struct Module {
  		Ok(*idx)	
  	}
 
- 	pub(crate) fn extern_fref(&self, mid2: usize, id1: usize) -> crate::types::BaseType {
+ 	/*pub(crate) fn extern_fref(&self, mid2: usize, id1: usize) -> crate::types::BaseType {
  		let extd = &self.extern_decl[id1 % self.extern_decl.len()];
  		if extd.resolved() {
  			crate::types::CompositeType::new_fref(extd.module_id, extd.function_id, false)
  		} else {
  			crate::types::CompositeType::new_fref(mid2, id1, true)
  		}
- 	}
+ 	}*/
 
  	pub fn extern_ref(&self, id: usize) -> &ExternDecl {
  		&self.extern_decl[id]
@@ -239,9 +237,9 @@ pub type PoolWriteGuard<'a> = RwLockWriteGuard<'a, Vec<Module>>;
  		self.mlock.read().expect("Failed to acquire read lock for module vec.")
  	}
 
- 	pub fn is_loaded(&self, path: &str) -> bool {
+ 	/*pub fn is_loaded(&self, path: &str) -> bool {
  		self.pathm.read().unwrap().contains_key(path)
- 	}
+ 	}*/
 
  	pub fn write_lock(&self) -> PoolWriteGuard {
  		self.mlock.write().expect("Failed to acquire write lock for module vec.")

@@ -1,3 +1,4 @@
+use crate::module::PoolWriteGuard;
 use std::io::BufRead;
 use std::str::FromStr;
 use core::time::Duration;
@@ -143,8 +144,8 @@ impl CallFrame {
 				BaseType::Alloc(a) => {
 					match a.as_ref() {
 						// FRefs are immutable, no restrictions on copy.
-						types::CompositeType::FRef { mod_id, func_idx, unext } => {
-							let cloned =  types::CompositeType::FRef { mod_id: *mod_id, func_idx: *func_idx, unext: *unext };
+						types::CompositeType::FRef { mod_id, func_idx } => {
+							let cloned =  types::CompositeType::FRef { mod_id: *mod_id, func_idx: *func_idx};
 							BaseType::Alloc(Box::new(cloned))
 						},
 						_ => self.regs[r1].take().unwrap()
@@ -166,7 +167,7 @@ impl CallFrame {
 
 	fn dealloc_ctype(ctype: types::CompositeType, refc: &mut RefCounter) -> FResult<()> {
 		match ctype {
-			types::CompositeType::FRef { mod_id: _, func_idx: _, unext: _}  => {
+			types::CompositeType::FRef { mod_id: _, func_idx: _}  => {
 				// No alloc here.
 			},
 			types::CompositeType::Str(_s) => {
@@ -393,38 +394,41 @@ pub struct WorkerThread {
 	pool: Arc<ModulePool>,
 }
 
-#[inline]
-fn _prep_fcall(pool: &ModulePool, mod_id: usize, func_idx: usize, unext: bool) -> FResult<(usize, usize)> {
-	let mut mid = mod_id;
-	let mut fid = func_idx;
-	if unext {
-		let mut mvec = pool.write_lock();
-
-		let ext = &mvec[mod_id].extern_ref(func_idx);
-		if pool.is_loaded(&ext.module_path) {
-			mid = pool.id_by_name(&ext.module_path)?;
-			fid = mvec[mid].func_id(&ext.func_name)?;
-		} else {
-			// Write, without acquiring another lock.
- 			let path = ext.module_path.clone();
- 			let (pbuf, is_native) = pool.resolve_path(&path)?;
- 			if is_native {
- 				todo!("Re-write this section to load and resolve native libraries when loaded. This is unexpected rn.")
- 			}
- 			let module = crate::module::open(pbuf.to_str().unwrap())?;
- 			fid = module.func_id(&ext.func_name)?;
- 			mvec.push(module);
-	 		mid = mvec.len()-1;
-	 		pool.update_path(&path, mid);
- 		}
- 		let ext = &mut mvec[mod_id].extern_mutref(func_idx);
-	 	ext.module_id  = mid;
-	 	ext.function_id = fid;
-	 	ext.status = ResolutionStatus::Resolved;
-
-	 	std::mem::drop(mvec);
+fn resolve_extern(pool: &ModulePool, mut mvec: PoolWriteGuard, ext_ids: (usize, usize)) -> FResult<(usize, usize)> {
+	let ext = mvec[ext_ids.0].extern_ref(ext_ids.1);
+	match ext.status {
+		ResolutionStatus::Resolved => {
+			Ok((ext.module_id, ext.function_id))
+		},
+		ResolutionStatus::Unresolved => {
+			let (module_id, function_id) = match pool.id_by_name(&ext.module_path) {
+				Ok(module_id) => {	// if module is loaded retrieve function id
+					let function_id = mvec[module_id].func_id(&ext.func_name)?;
+					(module_id, function_id)
+				},
+				Err(_) => {			// otherwise load it.
+					let (pbuf, is_native) = pool.resolve_path(&ext.module_path)?;
+					if is_native {
+						todo!("Re-write this section to load and resolve native libraries when loaded. This is unexpected rn.")
+						// For native, change return type to (module_id, function_id, status) -> then match in ldx and yield Nref
+					} else {
+						let module = crate::module::open(pbuf.to_str().unwrap())?;
+						let function_id = module.func_id(&ext.func_name)?;
+						let module_id = mvec.len();
+			 			pool.update_path(&ext.module_path, module_id);
+						mvec.push(module);
+						(module_id, function_id)
+		 			}
+				}
+			};
+			let ext = mvec[ext_ids.0].extern_mutref(ext_ids.1);
+			// Update extern, and change to resolved.
+			ext.module_id = module_id;
+			ext.function_id = function_id;
+			ext.status = ResolutionStatus::Resolved;
+			Ok((module_id, function_id))
+		}
 	}
-	Ok((mid, fid))
 }
 
 #[inline]
@@ -446,10 +450,11 @@ fn _check_tailcall(slvw: &mut crate::utils::SliceView, rslot: Option<u8>) -> boo
 	false
 }
 
+// RN this method literally checks if value is FRef and copies its contents
 fn _extract_finfo(val: &BaseType) -> FResult<(usize, usize, bool)>{
 	if let BaseType::Alloc(cpt) = val {
-		if let types::CompositeType::FRef { mod_id, func_idx, unext} = &**cpt {
-			Ok((*mod_id, *func_idx, *unext))
+		if let types::CompositeType::FRef { mod_id, func_idx } = &**cpt {
+			Ok((*mod_id, *func_idx, false))
 		} else {
 			Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")))
 		}
@@ -542,10 +547,10 @@ impl WorkerThread {
 	pub fn begin(&mut self) -> FResult<()> {
 		while !self.stack.is_empty() {
 			let stack_top = self.stack.len() -1;
-			let cur_frame = &mut self.stack[stack_top];
-			let module_pool_vec_read = self.pool.read_lock();
-			let cur_module = &module_pool_vec_read[cur_frame.module_id];
-			let mut slvw = cur_module.new_view(cur_frame.ip);
+			let cur_frame = &mut self.stack[stack_top];					 // can be moved out
+			let module_pool_vec_read = self.pool.read_lock();            // --> this HAS to stay here.
+			let cur_module = &module_pool_vec_read[cur_frame.module_id]; // so this can't be outside loop either
+			let mut slvw = cur_module.new_view(cur_frame.ip);			 // this also, ig ; but it doesn't really matter
 			let opcode = slvw.get_u8();
 			// Ugly match arm. Could do better.
 			match opcode {
@@ -644,13 +649,19 @@ impl WorkerThread {
 				},
 				op::LDF => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
-					let val = types::CompositeType::new_fref(cur_frame.module_id, param.id as usize, false);
-					cur_frame.write_register(param.r1, val, &mut self.refc)?;
+					let val = types::CompositeType::new_fref(cur_frame.module_id, param.id as usize)//, false);
+					;cur_frame.write_register(param.r1, val, &mut self.refc)?;
 				},
 				op::LDX => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
-					let val = cur_module.extern_fref(cur_frame.module_id, param.id as usize);
-					cur_frame.write_register(param.r1, val, &mut self.refc)?;
+					cur_frame.ip = slvw.offset();
+					std::mem::drop(module_pool_vec_read);
+					let val = {
+						let mvec = self.pool.write_lock();
+						resolve_extern(&self.pool, mvec, (cur_frame.module_id, param.id as usize))
+					}?;
+					cur_frame.write_register(param.r1, types::CompositeType::new_fref(val.0, val.1), &mut self.refc)?;
+					continue;
 				},
 				op::LNOT => {
 					let r1 = slvw.get_u8();
@@ -676,11 +687,13 @@ impl WorkerThread {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
 					cur_frame.rslot = if dreg.r2 != 0 {Some(dreg.r2-1)} else {None};
 					let rparam = op::VariadicRegst::try_from(&mut slvw)?;
+					
 					// Set ip to next instr, for execution after return
 					cur_frame.ip = slvw.offset();
 
 					let is_tc = _check_tailcall(&mut slvw, cur_frame.rslot);
 
+					// Copy/Move arguments
 					let mut param = Vec::<Option<BaseType>>::new();
 					for reg in rparam.regs {
 						let rid = cur_frame.get_reg_id(reg)?;
@@ -688,13 +701,15 @@ impl WorkerThread {
 						param.push(val);
 					}
 
+					// Read FRef, they are already resolved now.
 					let val = cur_frame.read_register(dreg.r1)?;
-					let (mod_id, func_idx, unext) = _extract_finfo(val)?;
+					let (mod_id, func_id, native) = _extract_finfo(val)?;
 
-					std::mem::drop(module_pool_vec_read);
+					if native {
+						todo!("Haven't implemented native function calls yet! This is unexpected rn.")
+					}
 
-					let (mid, fid) = _prep_fcall(&self.pool,mod_id, func_idx, unext)?;
-					let new_frame = _make_frame(param, &self.pool, mid, fid)?;
+					let new_frame = _make_frame(param, &self.pool, mod_id, func_id)?;
 
 					if !is_tc {
 						self.stack.push(new_frame);	    // Push a new frame in the normal case.

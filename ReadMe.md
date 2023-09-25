@@ -5,7 +5,7 @@ Register-based ISA was preferred to stack-based primarily due to the reduced ins
 # Type System
 All values/objects may be classified largely into two types - BaseType, and CompositeType.
 
-There are seven base types:
+There are six base types:
 1. `Int`: A signed 64-bit integer (`i64`).
 2. `Flt`: A 64-bit double precision floating point integer (`f64`).
 3. `Chr`: A 32-bit unicode character.

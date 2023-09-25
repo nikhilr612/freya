@@ -14,7 +14,7 @@ pub struct MainArgs {
 	/// 1 - reference counting is enabled, but violations such as multiple mutable aliasing result in warnings
 	/// 2 - reference counting is enabled, and all violations result in panics.
 	/// any other value - same as 1.
-	#[arg(short, long, default_value_t = 1)]
+	#[arg(short, long, default_value_t = 2)]
 	pub refctl: u8,
 	/// Specify the entry-point of the program, which must be a function with atmost one argument.
 	#[arg(short, long)]
