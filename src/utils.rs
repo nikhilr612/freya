@@ -121,60 +121,43 @@ impl OutBuf for BufWriter<File> {
 	}
 }
 
-/* Discarded bitset implementation
-/******************************************/
 #[derive(Debug)]
-pub struct Bitset {
-	/// The length in bits of the bitset.
-	len: usize,
+pub struct BitSet {
 	/// A vector of length sufficient to contain atleast `len` bits.
-	data: Vec<u16>
+	data: Box<[u16]>
 }
 
-impl Bitset {
-	pub fn new(len: usize) -> Bitset {
-		let size = (len >> 4) + 1;
+impl BitSet {
+	pub fn new(len: usize) -> BitSet {
+		let size = (len + 15) >> 4;
 		let data = vec![0; size];
-		Bitset {
-			len: size,
-			data: data
+		BitSet {
+			data: data.into()
 		}
 	}
 
-	pub fn set(&mut self, idx: usize) {
+	pub(crate) fn set_unchecked(&mut self, idx: usize, value: bool) {
 		let bidx = idx >> 4;
 		let mask = (1 << (idx & 15)) as u16;
-		if bidx < self.data.len() {
+		if value {
 			self.data[bidx] |= mask;
+		} else {
+			self.data[bidx] &= !mask;
 		}
 	}
 
-	pub fn clear(&mut self, idx: usize) {
-		let bidx = idx >> 4;
-		let mask = !(1 << (idx & 15)) as u16;
-		if bidx < self.data.len() {
-			self.data[bidx] &= mask;
-		}	
-	}
-
-	pub fn get(&self, idx: usize) -> bool {
+	pub(crate) fn get_unchecked(&self, idx: usize) -> bool {
 		let bidx = idx >> 4;
 		let mask = (1 << (idx & 15)) as u16;
-		if bidx < self.data.len() {
-			(self.data[bidx] & mask) != 0
-		} else {
-			false
-		}
-	}
-
-	pub fn len(&self) -> usize {
-		self.len
+		(self.data[bidx] & mask) != 0
 	}
 
 	pub fn capacity(&self) -> usize {
-		self.data.len()
+		self.data.len() * 16
 	}
 
+	/*
+	// Discarded functions
 	pub fn next_set_bit(&self, idx: usize) -> Option<usize> {
 		let mut bidx = idx >> 4;
 		let mut rem = idx & 15;
@@ -218,16 +201,15 @@ impl Bitset {
 			rem = 0;
 		}
 	}
+	*/
 }
 
-impl Display for Bitset {
-	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-		write!(fmt, "Bitset{{\n")?;
+impl core::fmt::Display for BitSet {
+	fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+		writeln!(fmt, "bits{{")?;
 		for i in 0..self.data.len() {
-			write!(fmt, "{:016b}\n", self.data[i])?;
+			writeln!(fmt, "{:016b}", self.data[i])?;
 		}
-		write!(fmt, "\n}}")
+		write!(fmt, "}}")
 	}
 }
-/***************************************/
-*/

@@ -6,7 +6,7 @@
 /// 4. Arithmetic instructions: 0x3_
 /// 5. Relational operators, conditional branching related instructions: 0x4_
 /// 6. Debug related instructions: 0x5_
-/// 7. Allocation, and Index-related instructions: 0x6_
+/// 7. String, list related instructions: 0x6_
 
 use crate::utils::AsBytes;
 use crate::utils::OutBuf;
@@ -90,7 +90,7 @@ pub const RGE: u8 = 0x44;
 pub const RNEQ: u8 = 0x45;
 /// If r1 == r2, then r3 <- 1 else r3 <- 0
 pub const REQ: u8 = 0x40;
-/// If r1 evaluates to false as a boolean, i.e, it is `'\0'`, `0`, or `0.0`, then r2 is 0 else r2 is 1
+/// If r1 evaluates to false as a boolean, i.e, it is `'\0'`, `0`, or `0.0` or is empty, then r2 is 0 else r2 is 1
 pub const ISN0: u8 = 0x47;
 /// r1 <- !r1
 pub const LNOT: u8 = 0x48;
@@ -137,6 +137,14 @@ pub const FSLICE: u8 = 0x67;
 pub const REVERSE:u8 = 0x68;
 /// r1 <- Str()
 pub const NEWSTR: u8 = 0x69;
+/// r1 <- (0, 0, ... r2 times)
+pub const NEWBITS:u8 = 0x6a;
+/// r1.advance_by(r2)
+pub const ADVANCE:u8 = 0x6b;
+/// r1 <- range(r2..r3:r4)
+pub const NEWRANGE:u8= 0x6c;
+/// if r1 then r2 <- r1.pop() else ip <- addr;
+pub const POPOR: u8 = 0x6d;
 
 /// stdcall r1, r2
 pub const STDCALL: u8 = 0x12;
@@ -256,6 +264,14 @@ def_instr! {
 }
 
 def_instr! {
+	BiRegAddr {
+		r1: u8,
+		r2: u8,
+		addr: u32
+	} [6]
+}
+
+def_instr! {
 	QuadrupleRegst {
 		r1: u8,
 		r2: u8,
@@ -307,6 +323,8 @@ pub fn doublet_mnemonic_map(head: &str) -> Option<u8> {
 		"push" => Some(PUSH),
 		"pop"  => Some(POP),
 		"len" =>Some(LENGTH),
+		"advan" => Some(ADVANCE),
+		"newbs" => Some(NEWBITS),
 		_ => None
 	}
 }

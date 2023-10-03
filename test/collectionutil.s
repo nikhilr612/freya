@@ -8,7 +8,6 @@
 	.df sum, 1, 3, @sum_defn
 	.df max, 1, 4, @max_defn
 	.df min, 1, 4, @min_defn
-	# impl any, all
 .code
 
 # %0 - Const Ref / Slice, %1 - FRef, %2 - accumulator, %3 - temp

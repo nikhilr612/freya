@@ -3,6 +3,7 @@ use std::iter::zip;
 use core::fmt::Formatter;
 use core::fmt::Display;
 use std::cmp::Ordering;
+use crate::utils::BitSet;
 use crate::exec::RefCounter;
 
 #[derive(Debug)]
@@ -67,9 +68,16 @@ pub enum CompositeType {
 		parent: *const CompositeType,
 		start_off: usize,
 		end_off: usize,
+		advance_by: usize,
 		reverse: bool
 	},
 	List(Vec<BaseType>), // TODO: Implement list operations.
+	BitSet(BitSet),
+	Range {
+		start: i64,
+		end: i64,
+		step: i64
+	},
 	// Table(HashMap<String, BaseType>), // TODO: Sort out details of dict implementation. 
 	FRef {
 		mod_id: usize,
@@ -87,7 +95,7 @@ impl CompositeType {
 		match (self, other) {
 			(CompositeType::Str(s1), CompositeType::Str(s2)) => Ok(s1.cmp(s2)),
 			(CompositeType::List(l1), CompositeType::List(l2)) => { Ok(order_with_rev(l1.iter(), l2.iter(), false, false)?.unwrap_or(l1.len().cmp(&l2.len()))) },
-			(CompositeType::Slice { parent: p1, start_off: s_off1, end_off: e_off1, reverse: rev1 }, CompositeType::Slice { parent: p2, start_off: s_off2, end_off: e_off2, reverse: rev2 }) => {
+			(CompositeType::Slice { parent: p1, start_off: s_off1, end_off: e_off1, reverse: rev1, ..}, CompositeType::Slice { parent: p2, start_off: s_off2, end_off: e_off2, reverse: rev2, .. }) => {
 				let p1 = unsafe{ p1.as_ref().ok_or(new_error(ErrorType::NullPointer, "Slice is over a NULL parent.")) }?;
 				let p2 = unsafe{ p2.as_ref().ok_or(new_error(ErrorType::NullPointer, "Slice is over a NULL parent.")) }?;
 				match (p1, p2) {
@@ -103,6 +111,18 @@ impl CompositeType {
 		}
 	}
 
+	pub fn try_copy(&self) -> Option<CompositeType> {
+		match self {
+			CompositeType::FRef {mod_id, func_idx} => {
+				Some(CompositeType::FRef {mod_id: *mod_id, func_idx: *func_idx})
+			},
+			CompositeType::Range {start, end, step} => {
+				Some(CompositeType::Range {start: *start, end: *end, step: *step})
+			},
+			_ => None
+		}
+	}
+
 	pub fn length(&self) -> Result<usize, FatalErr> {
 		match self {
 			CompositeType::Str(s) => {
@@ -114,6 +134,12 @@ impl CompositeType {
 			CompositeType::Slice{parent: _, start_off, end_off, ..} => {
 				Ok(end_off - start_off)
 			},
+			CompositeType::BitSet(b) => {
+				Ok(b.capacity())
+			},
+			CompositeType::Range { start, end, step } => {
+				Ok(((end - start) / step).try_into().unwrap_or(0))
+			}
 			CompositeType::FRef {..} => Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'length' on {self:?}")))
 		}
 	}
@@ -128,7 +154,7 @@ impl CompositeType {
 				v.push(val);
 				Ok(())
 			},
-			CompositeType::FRef {..} | CompositeType::Slice {..} => {
+			CompositeType::FRef {..} | CompositeType::Slice {..} | CompositeType::BitSet {..} | CompositeType::Range {..} => {
 				Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'push' on {self:?}")))
 			}
 		}
@@ -143,15 +169,25 @@ impl CompositeType {
 					Some(ch) => Ok(BaseType::Chr(ch)),
 				}
 			},
-			CompositeType::Slice { parent, start_off, end_off, reverse } => {
+			CompositeType::Slice { parent, start_off, end_off, reverse, advance_by } => {
 				let parent = unsafe { parent.as_ref().ok_or(new_error(ErrorType::NullPointer, "Slice is over a NULL parent."))? };
 				match parent {
 					CompositeType::Str(string) => {
 						let stringref = &string[*start_off..*end_off];
 						if *reverse {
-							let ch = stringref.chars().next().ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?;
+							let mut chars_iter = stringref.chars();
+							let ch = chars_iter.next().ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?;
 							*start_off += ch.len_utf8();
-							Ok(BaseType::Chr(ch))
+							let res = Ok(BaseType::Chr(ch));
+							for _ in 0..(*advance_by-1) {
+								let tmp = chars_iter.next();
+								let ch = match tmp {
+									None => {break;},
+									Some(ch) => ch
+								};
+								*start_off += ch.len_utf8();
+							}
+							res
 						} else {
 							let (index, ch) = stringref.char_indices().next_back().ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?;
 							*end_off = index + *start_off;
@@ -161,15 +197,15 @@ impl CompositeType {
 					CompositeType::List(v) => {
 						if *reverse {
 							let res = _copy_or_borrow(v.get(*start_off).ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?, refc);
-							*start_off += 1;
+							*start_off += *advance_by;
 							res
 						} else {
-							*end_off -= 1;
+							*end_off -= *advance_by;
 							_copy_or_borrow(v.get(*end_off).ok_or(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty slice."))?, refc)
 						}
 					},
 					// TODO: Add List Slices.
-					CompositeType::Slice {..} | CompositeType::FRef {..} => panic!("Slices cannot have any parents other than Str or List.")
+					CompositeType::Slice {..} | CompositeType::FRef {..} | CompositeType::BitSet {..} | CompositeType::Range {..} => panic!("Slices cannot have any parents other than Str or List.")
 				}
 			},
 			CompositeType::List(v) => {
@@ -178,8 +214,16 @@ impl CompositeType {
 					None => Err(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty list.")),
 					Some(val) => Ok(val)
 				}
-			}
-			CompositeType::FRef {..} => {
+			},
+			CompositeType::Range { start, end, step } => {
+				if (*end - *start)*(*step) < 0 {
+					return Err(new_error(ErrorType::IllegalState, "Cannot 'pop' from empty range."));
+				}
+				let ret = BaseType::Int(*start);
+				*start += *step;
+				Ok(ret)
+			},
+			CompositeType::FRef {..} | CompositeType::BitSet{..} => {
 				Err(new_error(ErrorType::TypeMismatch, format!("Unsupported 'pop' on {self:?}")))
 			}
 		}
@@ -220,29 +264,29 @@ impl CompositeType {
 			CompositeType::Str(s) => {
 				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, s.len())?;
 				let parent = self as *const CompositeType;
-				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev};
+				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev, advance_by: 1};
 				refc.incref(parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
 			CompositeType::List(v) => {
 				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, v.len())?;
 				let parent = self as *const CompositeType;
-				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev};
+				let ctype = CompositeType::Slice {parent, start_off: s_off, end_off: e_off, reverse: rev, advance_by: 1};
 				refc.incref(parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
-			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
+			CompositeType::Slice{ parent, start_off, end_off, reverse, advance_by } => {
 				let len = end_off - start_off;
 				refc.incref(*parent)?;
 				let (s_off, e_off, rev) = Self::_new_slice(s1, s2, len)?;
 				let ctype = if !reverse {
 					let real_s_off = start_off + s_off;
 					let real_e_off = start_off + e_off;
-					CompositeType::Slice {parent: *parent, start_off: real_s_off, end_off: real_e_off, reverse: rev}
+					CompositeType::Slice {parent: *parent, start_off: real_s_off, end_off: real_e_off, reverse: rev, advance_by: *advance_by}
 				} else {
 					let real_s_off = end_off - s_off;
 					let real_e_off = end_off - e_off;
-					CompositeType::Slice {parent: *parent, start_off: real_e_off, end_off: real_s_off, reverse: !rev}
+					CompositeType::Slice {parent: *parent, start_off: real_e_off, end_off: real_s_off, reverse: !rev, advance_by: *advance_by}
 				};
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
@@ -255,19 +299,19 @@ impl CompositeType {
 			CompositeType::List(v) => {
 				let len = v.len();
 				let parent = self as *const CompositeType;
-				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false};
+				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false, advance_by: 1};
 				refc.incref(parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
 			CompositeType::Str(s) => {
 				let len = s.len();
 				let parent = self as *const CompositeType;
-				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false};
+				let ctype = CompositeType::Slice {parent, start_off: 0, end_off: len, reverse: false, advance_by: 1};
 				refc.incref(parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
-			CompositeType::Slice{ parent, start_off, end_off, reverse } => {
-				let ctype = CompositeType::Slice {parent: *parent, start_off: *start_off, end_off: *end_off, reverse: *reverse};
+			CompositeType::Slice{ parent, start_off, end_off, reverse, advance_by } => {
+				let ctype = CompositeType::Slice {parent: *parent, start_off: *start_off, end_off: *end_off, reverse: *reverse, advance_by: *advance_by};
 				refc.incref(*parent)?;
 				Ok(BaseType::Alloc(Box::new(ctype)))
 			},
@@ -281,7 +325,7 @@ impl CompositeType {
 				v.reverse();
 				Ok(())
 			},
-			CompositeType::Slice {parent: _, start_off: _, end_off: _, reverse} => {
+			CompositeType::Slice {parent: _, start_off: _, end_off: _, reverse, ..} => {
 				*reverse = !(*reverse);
 				Ok(())
 			},
@@ -303,7 +347,7 @@ impl CompositeType {
 				let index = Self::_verify_index(idx, s.len())?;
 				Ok(BaseType::Chr((s.as_bytes())[index] as char))
 			},
-			CompositeType::Slice { parent, start_off, end_off, reverse } => {
+			CompositeType::Slice { parent, start_off, end_off, reverse, ..} => {
 				let index  = Self::_verify_index(idx, end_off - start_off)?;
 				let parent = unsafe_deref(*parent, self)?;
 				if *reverse {
@@ -311,6 +355,10 @@ impl CompositeType {
 				} else {
 					parent._get_index_unchecked(start_off + index, refc)
 				}
+			},
+			CompositeType::BitSet(b) => {
+				let index = Self::_verify_index(idx, b.capacity())?;
+				Ok(BaseType::Int(b.get_unchecked(index) as i64))
 			},
 			CompositeType::List(v) => {
 				let index = Self::_verify_index(idx, v.len())?;
@@ -327,6 +375,10 @@ impl CompositeType {
 			CompositeType::List(v) => {
 				let index = Self::_verify_index(idx, v.len())?;
 				_copy_or_borrow_mut(&mut v[index], refc)
+			},
+			CompositeType::BitSet(b) => {
+				let index = Self::_verify_index(idx, b.capacity())?;
+				Ok(BaseType::Int(b.get_unchecked(index) as i64))
 			},
 			CompositeType::Str(s)  => {
 				// Identical to get_index, just for convenience.
@@ -345,6 +397,11 @@ impl CompositeType {
 				let v = std::mem::replace(&mut v[index], value);
 				Ok(Some(v))
 			},
+			CompositeType::BitSet(b) => {
+				let index = Self::_verify_index(idx, b.capacity())?;
+				b.set_unchecked(index, crate::types::as_bool(&value));
+				Ok(Some(value))
+			}
 			CompositeType::Str(_) => {
 				Err(new_error(ErrorType::TypeMismatch, "Overwriting contents of UTF-8 byte string at arbitrary indices is generally unsafe."))
 			},
@@ -373,7 +430,7 @@ impl Display for CompositeType {
 	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
 		match self {
 			CompositeType::Str(s) => write!(fmt, "{}", s),
-			CompositeType::Slice {parent, start_off, end_off, reverse} => {
+			CompositeType::Slice {parent, start_off, end_off, reverse, .. } => {
 				let parent = unsafe { parent.as_ref().unwrap() };
 				match parent {
 					CompositeType::Str(string) => {
@@ -398,6 +455,7 @@ impl Display for CompositeType {
 				}
 			},
 			CompositeType::List(vec) => { display_list_slice(fmt, vec) },
+			CompositeType::BitSet(bset) => { write!(fmt, "{bset}") },
 			a => write!(fmt, "{:?}", a)
 		}
 	}
@@ -568,6 +626,11 @@ fn _copy_or_borrow(val: &BaseType, refc: &mut RefCounter) -> Result<BaseType, Fa
  			Ok(BaseType::ConstRef(ptr))
  		},
  		BaseType::Alloc(a)=> {
+ 			if let Some(v) = a.try_copy() {
+ 				// Copy whenever you can
+ 				return Ok(BaseType::Alloc(Box::new(v)));
+ 			}
+ 			// Otherwise, try borrow
  			let aref = a.as_ref() as *const CompositeType;
  			refc.incref(aref)?;
  			Ok(BaseType::ConstRef(aref))
@@ -589,6 +652,11 @@ fn _copy_or_borrow_mut(val: &mut BaseType, refc: &mut RefCounter) -> Result<Base
  			Ok(BaseType::ConstRef(ptr))
  		},
  		BaseType::Alloc(a)=> {
+ 			if let Some(v) = a.try_copy() {
+ 				// Copy whenever you can
+ 				return Ok(BaseType::Alloc(Box::new(v)));
+ 			}
+ 			// Or borrow mutably
  			let aref = a.as_mut() as *mut CompositeType;
  			refc.incref_mut(aref)?;
  			Ok(BaseType::MutRef(aref))
@@ -688,7 +756,7 @@ pub fn as_bool(rv: &BaseType) -> bool {
 			match a {
 				CompositeType::Str(s) => !s.is_empty(),
 				CompositeType::List(v)=> !v.is_empty(),
-				CompositeType::Slice {parent: _, start_off, end_off, reverse: _} => start_off < end_off,
+				CompositeType::Slice {parent: _, start_off, end_off, ..} => start_off < end_off,
 				_ => true
 			}
 		}
@@ -758,15 +826,25 @@ pub(crate) fn try_index(indexable: &BaseType, index_value: &BaseType, refc: &mut
 		BaseType::MutRef(ptr) => {
 			let ctype = unsafe_deref_mut(*ptr, indexable)?;
 			ctype.getindex_mut(index_value, refc)
-		}
+		},
+		BaseType::Alloc(a) => {
+			let ctype = a.as_ref();
+			refc.verify_borrow(a)?;
+			ctype.getindex(index_value, refc)
+		},
 		_ => Err(new_error(ErrorType::TypeMismatch, format!("{indexable} cannot be indexed")))
 	}
 }
 
-pub(crate) fn try_putindex(indexable: &mut BaseType, index_value: &BaseType, value: BaseType) -> Result<Option<BaseType>,FatalErr> {
+pub(crate) fn try_putindex(indexable: &mut BaseType, index_value: &BaseType, value: BaseType, refc: &RefCounter) -> Result<Option<BaseType>,FatalErr> {
 	match indexable {
 		BaseType::MutRef(ptr) => {
 			let ctype = unsafe_deref_mut(*ptr, indexable)?;
+			ctype.putindex(index_value, value)
+		},
+		BaseType::Alloc(a) => {
+			refc.verify_borrow_mut(a)?;
+			let ctype = a.as_mut();
 			ctype.putindex(index_value, value)
 		},
 		_ => Err(new_error(ErrorType::TypeMismatch, format!("Cannot set value at index for {indexable} without mutable reference")))

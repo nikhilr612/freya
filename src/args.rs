@@ -37,7 +37,7 @@ pub enum Commands {
 		pathlist: Vec<String>
 	},
 	#[clap(alias = "asm")]
-	/// Assemble a source file to bytecode. If debug flag is set, then line numbers are emitted.
+	/// Assemble a source file to bytecode. If debug flag is set, line numbers are emitted.
 	Assemble { 
 		/// Path to the assembly file
 		path: String, 

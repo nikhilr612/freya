@@ -151,7 +151,7 @@ macro_rules! arg_instr {
 pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut String, lno: &mut usize, emit_lines: bool) -> Result<(), String> {
 	out.write_all(&crate::module::MAGIC).map_err(|e| {format!("Failed to write MAGIC into outfile,\n\tcaused by: {:?}", e)})?;
 	*lno = 1;
-	let mut lman = LabelManager::new(); let mut mode = 0;	// 3 = Constant Pool, 1 = Func Decl, 2 = Extern, 0 = Code.
+	let mut lman = LabelManager::new(); let mut mode = 255;	// 3 = Constant Pool, 1 = Func Decl, 2 = Extern, 0 = Code.
 	let mut const_id = 0;
 	let err_f = |e| {format!("Failed Write.\n\tcaused by: {:?}", e)};
 	while let Ok(len) = inf.read_line(line_mut) {
@@ -400,6 +400,19 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			arg_instr!(6, line, lman, 4, {(r1: 0, parse_reg), (r2: 1, parse_reg), (s1: 2, parse_reg), (s2: 3, parse_reg)});
 			out.write_u8(crate::op::SLICE).map_err(err_f)?;
 			crate::op::QuadrupleRegst {r1, r2, s1, s2}.write(out).map_err(err_f)?;
+		}
+		else if line.starts_with("popor") {
+			let args: Vec<&str> = line[6..].split(", ").collect();
+			let r1 = parse_reg(args[0], &lman)?;
+			let r2 = parse_reg(args[1], &lman)?;
+			if !args[2].starts_with('@') {
+				return Err("Branch to unlabelled code point is not allowed.".to_string());
+			}
+			let res = lman.get_label(out, &args[2][1..])?;
+			out.write_u8(crate::op::POPOR).map_err(err_f)?;
+			out.write_u8(r1).map_err(err_f)?;
+			out.write_u8(r2).map_err(err_f)?;
+			out.write_u32(res).map_err(err_f)?;
 		}
 		else if line.starts_with("nop") {
 			out.write_u8(crate::op::NOP).map_err(err_f)?;

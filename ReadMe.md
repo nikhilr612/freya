@@ -18,6 +18,7 @@ The following are the composite types:
 2. `Slice`: An immutable view into a parent list-like composite type.
 3. `FRef`: A reference to either an extern declaration or a function declaration in a specified module.
 4. `List`: A vector of base types.
+5. `Range`: An iterator-like object that yields integers provided a start, end and step
 
 # Memory Model
 Registers can only store base types, and are allocated contiguous memory on function call as per the limit specified in the function declaration.

@@ -142,13 +142,9 @@ impl CallFrame {
 				BaseType::Flt(v) => {BaseType::Flt(*v)},
 				BaseType::Chr(v) => {BaseType::Chr(*v)},
 				BaseType::Alloc(a) => {
-					match a.as_ref() {
-						// FRefs are immutable, no restrictions on copy.
-						types::CompositeType::FRef { mod_id, func_idx } => {
-							let cloned =  types::CompositeType::FRef { mod_id: *mod_id, func_idx: *func_idx};
-							BaseType::Alloc(Box::new(cloned))
-						},
-						_ => self.regs[r1].take().unwrap()
+					match a.try_copy() {
+						Some(a) => BaseType::Alloc(Box::new(a)),
+						None => self.regs[r1].take().unwrap()
 					}
 				},
 				BaseType::ConstRef(v) => {
@@ -173,6 +169,9 @@ impl CallFrame {
 			types::CompositeType::Str(_s) => {
 				// No sub objects owned.
 			},
+			types::CompositeType::BitSet(_b) => {
+				// No sub objects owned.
+			},
 			types::CompositeType::Slice { parent, ..} => {
 				// Has an immutable reference to parent object. Drop that reference.
 				refc.decref(parent)?;
@@ -183,6 +182,9 @@ impl CallFrame {
 					Self::cleanup_value(value, refc)?
 					// value is dropped.
 				}
+			},
+			types::CompositeType::Range {..} => {
+				// No alloc here.
 			}
 			/*,_ => {
 				unimplemented!()
@@ -800,6 +802,15 @@ impl WorkerThread {
 					let wval = types::as_composite_type_mut(rval, &self.refc)?.pop(&mut self.refc)?;
 					cur_frame.write_register(dreg.r2, wval, &mut self.refc)?;
 				},
+				op::POPOR => {
+					let breg = op::BiRegAddr::try_from(&mut slvw)?;
+					let rval = types::as_composite_type_mut(cur_frame.read_mutregst(breg.r1)?, &self.refc)?;
+					if let Ok(v) = rval.pop(&mut self.refc) {
+						cur_frame.write_register(breg.r2, v, &mut self.refc)?;
+					} else {
+						cur_frame.ip = breg.addr as usize;
+					}
+				},
 				op::SLICE => {
 					let qreg = op::QuadrupleRegst::try_from(&mut slvw)?;
 					let ctype = types::as_composite_type(cur_frame.read_register(qreg.r2)?, &self.refc)?;
@@ -822,18 +833,81 @@ impl WorkerThread {
 					let rval = cur_frame._take_register(r3, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
 					let idxv = cur_frame._take_register(r2, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
 					let ctyp = cur_frame.read_mutregst(treg.r1)?;
-					cur_frame.regs[r3] = types::try_putindex(ctyp, &idxv, rval)?; // regs[r3] is None, so no need to write, or drop check
-					cur_frame.regs[r2] = Some(idxv);							  // Move the index back.
+					cur_frame.regs[r3] = types::try_putindex(ctyp, &idxv, rval, &self.refc)?;	// regs[r3] is None, so no need to write, or drop check
+					cur_frame.regs[r2] = Some(idxv);							  				// Move the index back.
 				},
 				op::NEWLIST => {
 					let reg = slvw.get_u8();
 					let val = BaseType::Alloc(Box::new(types::CompositeType::List(Vec::new())));
 					cur_frame.write_register(reg, val, &mut self.refc)?;
 				},
+				op::NEWBITS => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let rv1  = cur_frame.read_register(dreg.r1)?;
+					let size = match rv1 {
+						BaseType::Int(i) => {
+							if *i < 0 {
+								return Err(new_error(ErrorType::IllegalValue, format!("Value {i} is not a valid length.")));
+							} else {
+								*i as usize
+							}
+						},
+						i => {
+							return Err(new_error(ErrorType::IllegalValue, format!("Value {i} is not a valid length.")));
+						}
+					};
+					let val = BaseType::Alloc(Box::new(types::CompositeType::BitSet(crate::utils::BitSet::new(size))));
+					cur_frame.write_register(dreg.r2, val, &mut self.refc)?;
+				},
+				op::NEWRANGE => {
+					let qreg = op::QuadrupleRegst::try_from(&mut slvw)?;
+					let r2 = cur_frame.read_register(qreg.r2)?;
+					let r3 = cur_frame.read_register(qreg.s1)?;
+					let r4 = cur_frame.read_register(qreg.s2)?;
+					let start = match r2 { BaseType::Int(i) => *i, _ => {
+						return Err(new_error(ErrorType::TypeMismatch, format!("Cannot create range with {r2} as start")))	
+					}};
+					let end  = match r3 { BaseType::Int(i) => *i, _ => {
+						return Err(new_error(ErrorType::TypeMismatch, format!("Cannot create range with {r3} as end")))	
+					}};
+					let step = match r4 { BaseType::Int(i) => *i, _ => {
+						return Err(new_error(ErrorType::TypeMismatch, format!("Cannot create range with {r4} as end")))	
+					}};
+					if step == 0 {
+						return Err(new_error(ErrorType::IllegalValue, "Cannot have zero step in range"))
+					}
+					let val = BaseType::Alloc(Box::new(types::CompositeType::Range {start, end, step}));
+					cur_frame.write_register(qreg.r1, val, &mut self.refc)?;
+				},
 				op::NEWSTR => {
 					let reg = slvw.get_u8();
 					let val = BaseType::Alloc(Box::new(types::CompositeType::Str(String::new())));
 					cur_frame.write_register(reg, val, &mut self.refc)?; 
+				},
+				op::ADVANCE => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					let rv2  = cur_frame.read_register(dreg.r2)?;
+					let newadv = match rv2 {
+						BaseType::Int(i) => *i,
+						a => {
+							return Err(new_error(ErrorType::IllegalValue, format!("Value {a} is not a valid step.")));
+						}
+					};
+					let rv1 = cur_frame.read_mutregst(dreg.r1)?;
+					let ctype = types::as_composite_type_mut(rv1, &self.refc)?;
+					match ctype {
+						types::CompositeType::Slice { parent: _, start_off: _, end_off: _, advance_by, reverse} => {
+							if newadv < 0 {
+								*reverse = !(*reverse);
+								*advance_by = (-newadv) as usize;
+							} else {
+								*advance_by = newadv as usize;
+							}
+						},
+						a => {
+							return Err(new_error(ErrorType::TypeMismatch, format!("Cannot set advance for {a}")));
+						}
+					}
 				},
 				_ => {
 					return Err(new_error(ErrorType::InvalidOpcode, format!("Unrecognized opcode {opcode:x}")));

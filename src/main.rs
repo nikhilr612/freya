@@ -4,6 +4,7 @@ use std::io::Write;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::fs::File;
+use std::process::ExitCode;
 use clap::Parser;
 
 mod types;
@@ -21,13 +22,13 @@ macro_rules! on_error_exit_gracefully {
             Ok(()) => {},
             Err(_) => {
                 eprintln!("VM Panicked on error.");
-                return;
+                return ExitCode::FAILURE;
             }
         }
     };
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = args::MainArgs::parse();
     match cli.command {
         args::Commands::VerifyHeader {path} => {
@@ -69,4 +70,5 @@ fn main() {
             b_out.flush().expect("Failed to flush contents to file.");
         }
     }
+    ExitCode::SUCCESS
 }
