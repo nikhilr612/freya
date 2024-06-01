@@ -3,10 +3,10 @@
 
 .extern 0
 
-.fdecl 2
+.fdecl 3
 	.df derivative_at, 2, 4, @diff_fn
-	.df integral_on, 3, 6, @intg_fn 
-
+	.df integral_on, 4, 6, @intg_fn
+	.df simps_integral, 4, 9, @simps_fn
 .code
 
 # %0 - FRef object, %1 - location, %2 & %3 - arithmetic registers
@@ -60,5 +60,39 @@ intg_fn:
 		jmp @loop_start
 	loop_end:
 		mul %5, %4, %5
+		ret %5
+.clr
+
+# %0 - FRef, %1 - a, %2 - b, %3 - n, %4 - step, %5 - sum, %6 - counter, %7 - bool, %8 - temp
+simps_fn:
+	# r4 = (b-a)
+	sub %2, %1, %4
+	# r4 = (b-a)/n
+	div %4, %3, %4
+	# r5 = r0(a)
+	stdcall %0, %6, %1
+	# r6 = r0(b)
+	stdcall %0, %7, %2
+	# r5 = f(a)+f(b)
+	add %5, %6, %5
+	ldi 1, %6
+	loop_start:
+		# r7 = r6 < n
+		rlt %6, %3, %7
+		branch %7, @end_loop
+		add %1, %4, %1
+		ldi 1, %8
+		bt& %6, %7, %7
+		inc %7, 1
+		lsh %8, %7, %7
+		stdcall %0, %9, %1
+		mul %8, %7, %8
+		add %5, %8, %5
+		inc %6, 1
+		jmp @loop_start
+	end_loop:
+		mul %5, %4, %5
+		ldi 3, %4
+		div %5, %4, %5
 		ret %5
 .clr

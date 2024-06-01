@@ -1,9 +1,7 @@
 use std::io::Write;
 use std::io::BufWriter;
 use std::fs::File;
-use crate::types::FatalErr;
-use crate::types::ErrorType;
-
+use crate::core::{FatalErr, ErrorType, new_error};
 pub(crate) struct SliceView<'a> {
 	idx: usize,
 	buf: &'a [u8]
@@ -29,7 +27,7 @@ impl SliceView<'_> {
 		match retstr {
 			Ok(s) => Ok(s.to_owned()),
 			Err(e) => {
-				Err(crate::types::new_error(ErrorType::UtfDecodeError, format!("Failed to decode slice {sl:?}\ncause:\t{e:?}")))
+				Err(new_error(ErrorType::UtfDecodeError, format!("Failed to decode slice {sl:?}\ncause:\t{e:?}")))
 			}
 		}
 	}
@@ -155,53 +153,6 @@ impl BitSet {
 	pub fn capacity(&self) -> usize {
 		self.data.len() * 16
 	}
-
-	/*
-	// Discarded functions
-	pub fn next_set_bit(&self, idx: usize) -> Option<usize> {
-		let mut bidx = idx >> 4;
-		let mut rem = idx & 15;
-		loop {
-			if bidx >= self.data.len() {
-				return None;
-			}
-			let curval = self.data[bidx];
-			if curval != 0 {
-				let mut mask = 1 << rem;
-				for i in rem..=15 {
-					if (curval & mask) != 0 {
-						return Some(bidx + i);
-					}
-					mask <<= 1;
-				}
-			}
-			bidx += 1;
-			rem = 0;
-		}
-	}
-
-	pub fn next_clear_bit(&self, idx: usize) -> Option<usize> {
-		let mut bidx = idx >> 4;
-		let mut rem = idx & 15;
-		loop {
-			if bidx >= self.data.len() {
-				return None;
-			}
-			let curval = !self.data[bidx];
-			if curval != 0 {
-				let mut mask = 1 << rem;
-				for i in rem..=15 {
-					if (curval & mask) != 0 {
-						return Some(bidx + i);
-					}
-					mask <<= 1;
-				}
-			}
-			bidx += 1;
-			rem = 0;
-		}
-	}
-	*/
 }
 
 impl core::fmt::Display for BitSet {

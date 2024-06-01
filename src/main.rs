@@ -7,14 +7,15 @@ use std::fs::File;
 use std::process::ExitCode;
 use clap::Parser;
 
-mod types;
-mod module;
+mod core;
 mod args;
-mod exec;
-mod op;
 mod utils;
-mod asm;
-//pub mod native;
+mod emit;
+
+use core::module;
+use core::exec;
+
+pub mod native;
 
 macro_rules! on_error_exit_gracefully {
     ($res: ident) => {
@@ -60,7 +61,7 @@ fn main() -> ExitCode {
             let mut b_out = BufWriter::new(out);
             let mut line = String::new();
             let mut lno = 0;
-            match asm::asm(&mut b_out, &mut b_in, &mut line, &mut lno, cli.debug) {
+            match emit::asm(&mut b_out, &mut b_in, &mut line, &mut lno, cli.debug) {
                 Ok(()) => {println!("Done.");},
                 Err(s) => {
                     eprintln!("{}", s);
