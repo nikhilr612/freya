@@ -1,20 +1,14 @@
-use crate::module::PoolWriteGuard;
 use std::io::BufRead;
 use std::str::FromStr;
 use core::time::Duration;
-use std::sync::Arc;
-use crate::core::module::ModulePool;
-use crate::core::module::FResult;
-use crate::core::module::ResolutionStatus;
-use crate::core::types::BaseType;
-use crate::core::types::FatalErr;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, hash_map::Entry};
 
-use crate::core::new_error;
-use crate::core::ErrorType;
-use crate::core::op;
-use crate::core::types;
+use crate::core::module::{ModulePool, ResolutionStatus, PoolWriteGuard};
+use crate::core::types::{self, BaseType, FatalErr, ErrorType, new_error};
+use crate::core::{op, FResult};
+use crate::args::RefPolicy;
+use crate::native::InterfacePool;
 
 #[derive(Debug)]
 struct CallFrame {
@@ -163,7 +157,7 @@ impl CallFrame {
 
 	fn dealloc_ctype(ctype: types::CompositeType, refc: &mut RefCounter) -> FResult<()> {
 		match ctype {
-			types::CompositeType::FRef { mod_id: _, func_idx: _}  => {
+			types::CompositeType::FRef { .. }  => {
 				// No alloc here.
 			},
 			types::CompositeType::Str(_s) => {
@@ -239,15 +233,6 @@ impl CallFrame {
 	}
 }
 
-#[derive(Debug)]
-#[repr(u8)]
-#[derive(Clone)]
-enum RefPolicy {
-	Inactive = 0,
-	WarnOnly = 1,
-	Strict	 = 2
-}
-
 pub(crate) struct RefCounter {
 	refctr: HashMap<usize, (usize, usize)>,
 	refp: RefPolicy
@@ -276,6 +261,7 @@ impl RefCounter {
 		if let RefPolicy::Inactive = self.refp {
 			return Ok(())
 		}
+
 		let addr = ptr as usize;
 		// Use Entry API to avoid double hash computation, at cost of pointer clone
 		if let Entry::Vacant(e) = self.refctr.entry(addr) {
@@ -298,6 +284,7 @@ impl RefCounter {
 		if let RefPolicy::Inactive = self.refp {
 			return Ok(())
 		}
+
 		let addr = ptr as usize;
 		if let Entry::Vacant(e) = self.refctr.entry(addr) {
 			e.insert((0, 1));
@@ -321,6 +308,7 @@ impl RefCounter {
 		if let RefPolicy::Inactive = self.refp {
 			return Ok(())
 		}
+
 		let addr = ptr as usize;
 		if self.refctr.contains_key(&addr) {
 			let tup = self.refctr.get_mut(&addr).unwrap();
@@ -339,6 +327,7 @@ impl RefCounter {
 		if let RefPolicy::Inactive = self.refp {
 			return Ok(())
 		}
+
 		let addr = ptr as usize;
 		if self.refctr.contains_key(&addr) {
 			let tup = self.refctr.get_mut(&addr).unwrap();
@@ -394,41 +383,40 @@ pub struct WorkerThread {
 	/// Provides read-only access to modules.
 	/// Pool is locked when a module is being loaded.
 	pool: Arc<ModulePool>,
+	nifp: Arc<RwLock<InterfacePool>>
 }
 
-fn resolve_extern(pool: &ModulePool, mut mvec: PoolWriteGuard, ext_ids: (usize, usize)) -> FResult<(usize, usize)> {
+fn resolve_extern(pool: &ModulePool, mut mvec: PoolWriteGuard, ext_ids: (usize, usize)) -> FResult<(usize, usize, bool)> {
 	let ext = mvec[ext_ids.0].extern_ref(ext_ids.1);
 	match ext.status {
-		ResolutionStatus::Resolved => {
-			Ok((ext.module_id, ext.function_id))
+		ResolutionStatus::Resolved => {							// We've already done this.
+			Ok((ext.module_id, ext.function_id, ext.native))	// A-OK.
 		},
-		ResolutionStatus::Unresolved => {
+		ResolutionStatus::Unresolved if !ext.native => {		// Unresolved non-native extern.
 			let (module_id, function_id) = match pool.id_by_name(&ext.module_path) {
 				Ok(module_id) => {	// if module is loaded retrieve function id
 					let function_id = mvec[module_id].func_id(&ext.func_name)?;
 					(module_id, function_id)
 				},
 				Err(_) => {			// otherwise load it.
-					let (pbuf, is_native) = pool.resolve_path(&ext.module_path)?;
-					if is_native {
-						todo!("Re-write this section to load and resolve native libraries when loaded. This is unexpected rn.")
-						// For native, change return type to (module_id, function_id, status) -> then match in ldx and yield Nref
-					} else {
-						let module = crate::module::open(pbuf.to_str().unwrap())?;
-						let function_id = module.func_id(&ext.func_name)?;
-						let module_id = mvec.len();
-			 			pool.update_path(&ext.module_path, module_id);
-						mvec.push(module);
-						(module_id, function_id)
-		 			}
-				}
+					let pbuf = pool.resolve_path(&ext.module_path)?;
+					let module = crate::module::open(pbuf.to_str().unwrap())?;
+					let function_id = module.func_id(&ext.func_name)?;
+					let module_id = mvec.len();
+			 		pool.update_path(&ext.module_path, module_id);
+					mvec.push(module);
+					(module_id, function_id)
+		 		}
 			};
 			let ext = mvec[ext_ids.0].extern_mutref(ext_ids.1);
 			// Update extern, and change to resolved.
 			ext.module_id = module_id;
 			ext.function_id = function_id;
 			ext.status = ResolutionStatus::Resolved;
-			Ok((module_id, function_id))
+			Ok((module_id, function_id, false))
+		},
+		ResolutionStatus::Unresolved => {
+			todo!("Native functions have not been implemented yet.");
 		}
 	}
 }
@@ -455,8 +443,8 @@ fn _check_tailcall(slvw: &mut crate::utils::SliceView, rslot: Option<u8>) -> boo
 // RN this method literally checks if value is FRef and copies its contents
 fn _extract_finfo(val: &BaseType) -> FResult<(usize, usize, bool)>{
 	if let BaseType::Alloc(cpt) = val {
-		if let types::CompositeType::FRef { mod_id, func_idx } = &**cpt {
-			Ok((*mod_id, *func_idx, false))
+		if let types::CompositeType::FRef { mod_id, func_idx, native } = &**cpt {
+			Ok((*mod_id, *func_idx, *native))
 		} else {
 			Err(new_error(ErrorType::NotCallable, format!("Incompatible value. {val:?} is not a callable.")))
 		}
@@ -513,20 +501,15 @@ macro_rules! instr_2arg {
 }
 
 impl WorkerThread {
-	pub fn new(mpath: &str, ep: &str, refp: u8, mp: Arc<ModulePool>) -> WorkerThread {
+	pub fn new(mpath: &str, ep: &str, refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>) -> WorkerThread {
 		let cf = CallFrame::from_fdecl(&mp, mpath, ep);
 		let mut stack = Vec::new();
-		let refp = match refp {
-			0 => RefPolicy::Inactive,
-			1 => RefPolicy::WarnOnly,
-			2 => RefPolicy::Strict,
-			_ => RefPolicy::WarnOnly
-		};
 		stack.push(cf);	// Load main onto stack.
 		WorkerThread {
 			refc: RefCounter::new(refp),
 			stack,
-			pool: mp
+			pool: mp,
+			nifp
 		}
 	}
 
@@ -651,8 +634,8 @@ impl WorkerThread {
 				},
 				op::LDF => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
-					let val = types::CompositeType::new_fref(cur_frame.module_id, param.id as usize)//, false);
-					;cur_frame.write_register(param.r1, val, &mut self.refc)?;
+					let val = types::CompositeType::new_fref(cur_frame.module_id, param.id as usize, false);
+					cur_frame.write_register(param.r1, val, &mut self.refc)?;
 				},
 				op::LDX => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
@@ -662,7 +645,7 @@ impl WorkerThread {
 						let mvec = self.pool.write_lock();
 						resolve_extern(&self.pool, mvec, (cur_frame.module_id, param.id as usize))
 					}?;
-					cur_frame.write_register(param.r1, types::CompositeType::new_fref(val.0, val.1), &mut self.refc)?;
+					cur_frame.write_register(param.r1, types::CompositeType::new_fref(val.0, val.1, val.2), &mut self.refc)?;
 					continue;
 				},
 				op::LNOT => {

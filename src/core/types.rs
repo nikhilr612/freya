@@ -32,6 +32,9 @@ pub enum ErrorType {
 	InvalidCall,
 	NullPointer,
 	InvalidIndex,
+	UnknownLibrary,
+	NativeLoadFailure,
+	NoSuchSymbol,
 	// NativeError
 }
 
@@ -82,13 +85,13 @@ pub enum CompositeType {
 	FRef {
 		mod_id: usize,
 		func_idx: usize,
-		// unext: bool
+		native: bool
 	},
 }
 
 impl CompositeType {
-	pub fn new_fref(modid: usize, fid: usize) -> BaseType {
-		BaseType::Alloc(Box::new(CompositeType::FRef{mod_id: modid, func_idx: fid}))
+	pub fn new_fref(mod_id: usize, func_idx: usize, native: bool) -> BaseType {
+		BaseType::Alloc(Box::new(CompositeType::FRef{mod_id, func_idx, native}))
 	}
 
 	fn cmp(&self, other: &CompositeType) -> Result<Ordering, FatalErr> {
@@ -113,8 +116,8 @@ impl CompositeType {
 
 	pub fn try_copy(&self) -> Option<CompositeType> {
 		match self {
-			CompositeType::FRef {mod_id, func_idx} => {
-				Some(CompositeType::FRef {mod_id: *mod_id, func_idx: *func_idx})
+			CompositeType::FRef {mod_id, func_idx, native} => {
+				Some(CompositeType::FRef {mod_id: *mod_id, func_idx: *func_idx, native: *native})
 			},
 			CompositeType::Range {start, end, step} => {
 				Some(CompositeType::Range {start: *start, end: *end, step: *step})

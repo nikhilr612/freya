@@ -3,7 +3,7 @@ name = "freya"
 version = "0.2.5"
 edition = "2021"
 authors = ["nikhilr"]
-description = "A simple experimental VM without managed memory."
+description = "A simple experimental register-based process virtual machine."
 keywords = ["process virtual machine", "vm"]
 license-file = "LICENSE"
 
@@ -19,3 +19,5 @@ panic = "abort"
 memmap2 = "0.9.4"
 clap = { version = "4.5.4", features = ["derive"] }
 paste = "1.0.15"
+libloading = "0.8.3"
+ariadne = "0.2.0"

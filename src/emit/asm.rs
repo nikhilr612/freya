@@ -242,10 +242,24 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			if mode != 2 {
 				return Err("Cannot declare external reference outside extern".to_owned())
 			}
+			out.write_u8(0).map_err(err_f)?;	// This is an extern, not a native function.
 			let end = line.rfind(',').ok_or("Incomplete extern declaration. Extern label missing.")?;
 			let path = &line[4..end];
 			out.write_u16(path.len().try_into().expect("Path length cannot exceed 65535")).map_err(err_f)?;
 			out.write_str(path).map_err(err_f)?;
+			let end = line.rfind('@').ok_or("Label is mandatory for extern declarations.")?;
+			let name = &line[(end+1)..];
+			lman.put_extern(name);
+		}
+		else if line.starts_with(".nf") {
+			if mode != 2 {
+				return Err("Cannot declare external reference outside extern".to_owned())
+			}
+			out.write_u8(1).map_err(err_f)?;	// This is an extern, not a native function.
+			let end = line.rfind(',').ok_or("Incomplete extern declaration. Extern label missing.")?;
+			let libn = &line[4..end].trim();
+			out.write_u16(libn.len().try_into().expect("Library identifier cannot exceed 65535")).map_err(err_f)?;
+			out.write_str(libn).map_err(err_f)?;
 			let end = line.rfind('@').ok_or("Label is mandatory for extern declarations.")?;
 			let name = &line[(end+1)..];
 			lman.put_extern(name);

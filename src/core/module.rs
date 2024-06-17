@@ -1,13 +1,9 @@
-use std::path::PathBuf;
-use std::path::Path;
-use std::sync::RwLockWriteGuard;
-
-use std::sync::RwLockReadGuard;
-use std::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::utils::SliceView;
-use crate::exec::RefCounter;
-
-use crate::core::types:: {self, CompositeType, BaseType, ErrorType, FatalErr, new_error};
+use crate::core::exec::RefCounter;
+use crate::core::FResult;
+use crate::core::types:: {self, CompositeType, BaseType, ErrorType, new_error};
 
 use memmap2::Mmap;
 use std::fs::File;
@@ -20,8 +16,6 @@ pub const LIBRARYEXT: &str = "dll";
 pub const LIBRARYEXT: &str = "so";
 
 pub const FILEXT: &str = "fr";
-pub type FResult<T> = Result<T, FatalErr>;
-
 #[derive(Debug)]
 #[repr(u8)]
 /// Enum to denote state of extern declarations.
@@ -61,17 +55,19 @@ pub struct ExternDecl {
 	/// The id of the module
 	pub(crate) module_id: usize,
 	/// The id of the function within the module.
-	pub(crate) function_id: usize
+	pub(crate) function_id: usize,
+	pub(crate) native: bool
 }
 
 impl ExternDecl {
-	fn new_extern(mpath: &str, fn_name: &str) -> ExternDecl {
+	fn new_extern(mpath: &str, fn_name: &str, native: bool) -> ExternDecl {
 		ExternDecl {
 			module_path: mpath.to_owned(),
 			func_name: fn_name.to_owned(),
 			module_id: 0,
 			function_id: 0,
-			status: ResolutionStatus::Unresolved
+			status: ResolutionStatus::Unresolved,
+			native
 		}
 	}
 }
@@ -185,29 +181,21 @@ pub type PoolWriteGuard<'a> = RwLockWriteGuard<'a, Vec<Module>>;
  		} // Don't care about paths that don't exist.
  	}
 
- 	pub fn resolve_path(&self, path: &str) -> FResult<(PathBuf, bool)> {
+ 	pub fn resolve_path(&self, path: &str) -> FResult<PathBuf> {
  		let mut buf = PathBuf::new();
  		for dirpath in self.spath.iter() {
  			buf.push(dirpath);
  			buf.push(Path::new(path));
  			buf.set_extension(FILEXT);
  			if buf.as_path().exists() {
- 				return Ok((buf, false));
- 			}
- 			buf.set_extension(LIBRARYEXT);
- 			if buf.as_path().exists() {
- 				return Ok((buf, true));
+ 				return Ok(buf);
  			}
  		}
  		Err(types::new_error(ErrorType::NoSuchModule, format!("Module or library {path} not found in available paths.")))
  	}
 
  	pub fn load(&mut self, path: &str) -> FResult<()> {
- 		let (pbuf, is_native) = self.resolve_path(path)?;
-
- 		if is_native {
- 			todo!("Native Libraries have not been implemented yet.")
- 		}
+ 		let pbuf = self.resolve_path(path)?;
 
    		let modules = self.mlock.get_mut().map_err(|e| new_error(ErrorType::InternalFailure, format!("ModulePool RwLock 'mlock' is poisoned\n\tcause: {e}")))?;
  		let module = open(pbuf.to_str().unwrap())?;
@@ -268,19 +256,24 @@ pub fn open(fpath: &str) -> FResult<Module> {
 			return Err(types::new_error(ErrorType::ModuleLoadFailure, format!("Couldn't open module with path: {}", fpath)));
 		}
 	};
+
 	let mmap = unsafe {
 		Mmap::map(&f)
 	};
+
 	let mmap = match mmap {
 		Ok(m) => m, 
 		Err(_e) => {
 			return Err(types::new_error(ErrorType::ModuleLoadFailure, format!("Couldn't create mmap for path: {}", fpath)));
 		}
 	};
+
 	let mut view = SliceView::wrap(0, &mmap);
+	
 	if view.take(4) != MAGIC {
 		return Err(types::new_error(ErrorType::ModuleLoadFailure, format!("Illegal header start sequence for file: {}", fpath)));
 	}
+
 	let mut cpool = Vec::new();
 	let vlen = view.get_u16() as usize;
 	for _i in 0..vlen {
@@ -316,6 +309,7 @@ pub fn open(fpath: &str) -> FResult<Module> {
 	let elen = view.get_u16() as usize;
 	let mut edecs = Vec::new();
 	for _i in 0..elen {
+		let native = view.get_u8() != 0;
 		let nlen = view.get_u16() as usize;
 		let st = view.decode_utf8(nlen)?;
 		let (mpath, fname) = match st.split_once(':') {
@@ -324,7 +318,7 @@ pub fn open(fpath: &str) -> FResult<Module> {
 				return Err(types::new_error(ErrorType::ModuleLoadFailure, format!("Invalid extern path {st}")))
 			}
 		};
-		let ext = ExternDecl::new_extern(mpath, fname);
+		let ext = ExternDecl::new_extern(mpath, fname, native);
 		edecs.push(ext);
 
 	}
