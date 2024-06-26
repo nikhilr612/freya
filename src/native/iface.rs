@@ -31,7 +31,7 @@ pub struct InterfacePool {
 }
 
 impl InterfacePool {
-	fn add_path(&mut self, name: &str, path: &str) {
+	pub(crate) fn add_path(&mut self, name: &str, path: &str) {
 		if Path::new(path).exists() {
 			self.libpaths.insert(name.to_string(), path.to_string());
 		} else {

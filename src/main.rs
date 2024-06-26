@@ -1,5 +1,6 @@
 //! A simple register-based process virtual machine written in Rust.
 
+use std::sync::RwLock;
 use std::path::Path;
 use std::sync::Arc;
 use std::io::Write;
@@ -20,9 +21,9 @@ use core::exec;
 pub mod native;
 
 macro_rules! on_error_exit_gracefully {
-    ($res: ident, $ev: ident,$body: block) => {
+    ($res: expr, $ev: ident,$body: block) => {
         match $res {
-            Ok(()) => {},
+            Ok(()) => (),
             Err($ev) => {
                 $body
                 eprintln!("VM Panicked on error.");
@@ -38,21 +39,26 @@ fn main() -> ExitCode {
         args::Commands::VerifyHeader {path} => {
             println!("{:#?}", module::open(&path));
         },
-        args::Commands::ExecNoArg {filepath, pathlist} => {
+        args::Commands::ExecNoArg {filepath, pathlist, nlibpath} => {
             let mut nifp = native::InterfacePool::default();
+            for path in nlibpath {
+                if let Some((a,b)) = path.split_once('=') { nifp.add_path(a, b) }
+                else { eprintln!("WARNING: {path} is not a valid key-value pair for specifying libraries. Expect [name]=[path] format."); }
+            }
+            let nifp = Arc::new(RwLock::new(nifp));
+
             let mut mp = module::ModulePool::new();
             for path in pathlist {
                 mp.add_path(Path::new(&path));
             }
             mp.add_path(std::env::current_dir().expect("Failed to read current working directory path").as_path());
             
-            let res = mp.load(&filepath).map_err(|e| {
-                eprintln!("{e:}")
-            });
+            let res = mp.load(&filepath);
             on_error_exit_gracefully!(res, e, {eprintln!("{e:?}");});
             let mp = Arc::new(mp);
+
             let ep = cli.entry_pt.unwrap_or("main".to_string());
-            let mut wt = exec::WorkerThread::new(&filepath, &ep, cli.refctl, mp.clone());
+            let mut wt = exec::WorkerThread::new(&filepath, &ep, cli.refctl, mp.clone(), nifp.clone());
             let res = wt.begin();
             on_error_exit_gracefully!(res, e, {
                 eprintln!("{}", e);
@@ -74,6 +80,19 @@ fn main() -> ExitCode {
                 }
             }
             b_out.flush().expect("Failed to flush contents to file.");
+        },
+        args::Commands::MonoCompile { path } => {
+            let file = File::open(path).expect("Failed to open file");
+            let mut reader = BufReader::new(file);
+            let ast = match emit::parse(&mut reader) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    eprintln!("Parsing failed.");
+                    return ExitCode::FAILURE;
+                }
+            };
+            println!("AST:\n{:#?}", ast);
         }
     }
     ExitCode::SUCCESS

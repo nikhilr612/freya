@@ -1,0 +1,4 @@
+(define APERY 1.2020569 )
+(define (main ) (print "Greetings to you!"))
+(define (other-fn ) (nop "This is some random stuff.. I doubt anyone cares"))
+(define A-MISTAKE' 12u3 )

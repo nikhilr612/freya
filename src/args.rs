@@ -43,7 +43,10 @@ pub enum Commands {
 		filepath: String,
 		#[arg(short, long)]
 		/// List of directories to include in search path for resolving modules.
-		pathlist: Vec<String>
+		pathlist: Vec<String>,
+		#[arg(short, long)]
+		/// List of native libraries that should be loaded on demand.
+		nlibpath: Vec<String>
 	},
 	#[clap(alias = "asm")]
 	/// Assemble a source file to bytecode. If debug flag is set, line numbers are emitted.
@@ -53,7 +56,8 @@ pub enum Commands {
 		/// Path to the output file.
 		output: Option<String>
 	},
-	/// Emit bytecode for a single source file 
+	/// Emit bytecode for a single source file.
+	#[clap(alias = "mc")]
 	MonoCompile {
 		/// Path to the source file.
 		path: String
