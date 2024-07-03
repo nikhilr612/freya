@@ -49,9 +49,7 @@ pub enum TlErrorType {
 	IoError,
 	UnexpectedToken,
 	UnexpectedEOF,
-	InvalidNumeric,
-	InvalidToken,
-	InvalidBoolean
+	InvalidNumeric
 }
 
 pub struct TlError {
@@ -73,10 +71,6 @@ impl TlError {
 
 	fn eof<T>(stream: &CharStream<'_, T>) -> Self where T: Read {
 		TlError { etype: TlErrorType::UnexpectedEOF, msg: "Character stream terminated abruptly.".to_string(), offset: stream.byte_position() }
-	}
-
-	fn is_eof(&self) -> bool {
-		matches!(self.etype, TlErrorType::UnexpectedEOF)
 	}
 }
 
@@ -129,7 +123,7 @@ fn int_from_str_radix_auto(s: &str, offset: usize) -> Result<i64, TlError> {
   		return Err(TlError { etype: TlErrorType::UnexpectedToken, msg: format!("Invalid radix prefix '0{c}'. Expected '0x', '0b', or '0o'."), offset})
   	}
   };
-  i64::from_str_radix(s.trim_start_matches(['0', 'x', 'o', 'b']), radix)
+  i64::from_str_radix(&s[2..], radix)
   	.map_err(|e| {
   		let msg = format!("'{s}' is not an integer in base {radix},\n\tdetail: {e}");
   		TlError { etype: TlErrorType::InvalidNumeric, msg, offset }
@@ -190,10 +184,8 @@ fn match_parse_literal (ch: char, buf: String, start: usize, end: usize) -> Resu
 fn match_rule<T>(stream: &mut CharStream<'_, T>, v: &mut Vec<Sexpr>, ch: char, close_char: char) -> Result<bool, TlError> 
 where T: Read {
 	match ch {
-		'\'' => v.push(parse_char(stream)?),
-		'"' => v.push(parse_string(stream)?),
-		'(' => v.push(parse_sexpr(stream, ')')?),
-		'[' => v.push(parse_sexpr(stream, ']')?),
+		'\'' => v.push(parse_char(stream)?), '"' => v.push(parse_string(stream)?),
+		'(' => v.push(parse_sexpr(stream, ')')?), '[' => v.push(parse_sexpr(stream, ']')?),
 		';' => parse_comment(stream)?,
 		_ => {
 			let mut buf = String::new(); buf.push(ch);
@@ -222,8 +214,7 @@ where T: Read {
 						offset: start }
 						);
 				},
-				'(' => v.push(parse_sexpr(stream, ')')?),
-				'[' => v.push(parse_sexpr(stream, ']')?),
+				'(' => v.push(parse_sexpr(stream, ')')?), '[' => v.push(parse_sexpr(stream, ']')?),
 				';' => parse_comment(stream)?,
 				c if c.is_whitespace() => { /* do nothing */ },
 				c => {
