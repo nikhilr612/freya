@@ -92,7 +92,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            println!("AST:\n{:#?}", ast);
+            println!("AST:\n{ast:#?}");
         }
     }
     ExitCode::SUCCESS

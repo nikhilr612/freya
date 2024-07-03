@@ -1,4 +1,5 @@
 (define APERY 1.2020569 )
-(define (main ) (print "Greetings to you!"))
-(define (other-fn ) (nop "This is some random stuff.. I doubt anyone cares"))
-(define A-MISTAKE' 12u3 )
+; (define (main ) (print "Greetings to you!"))
+; nop can be used to write comments, but since single-line comments like these are possible..
+; (define (other-fn ) (nop "This is some random stuff.. I doubt anyone cares")) ; they're rather unnecessary.
+(define A-MISTAKE' 123 )

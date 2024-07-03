@@ -3,7 +3,8 @@
 
 // TODO: Extremely verbose. Desperately needs a re-write.
 
-use std::{io::Read, path::Display};
+use std::io::Read;
+use crate::utils::CharStream;
 
 /// Enum for all possible token types.
 #[derive(Debug)]
@@ -41,272 +42,210 @@ pub enum Sexpr {
 	List(Vec<Sexpr>)
 }
 
-/*
-One way to do this would be to define a finite-state machine for the express purpose of tokenizing the stream.
-Then, define a parser function to recursively (or using a stack backbone) group tokens into Sexpr and build AST.
-enum ParserState {
-	/// The parser awaits a token, or LPARAM ('(')
-	Open,
-	/// The parser has recorded only digits thus far. If token terminates, then an integer is emitted.
-	Number,
-	/// The parser has recorded a `.` somewhere, and a float will be emitted.
-	FloatN,
-	/// The parser has recorded alphanumeric characters, that signal a valid identifier thus far. Emits a symbol.
-	Symbol,
-	/// The parser is in the process of consuming a string literal. Escape sequences will be translated here.
-	Quotes
-}
-But, this approach is not taken here.
-*/
-
 /// An aggregate enum with error codes for all errors involved in parsing, and code emitting phases.
 #[repr(u8)]
 #[derive(Debug)]
 pub enum TlErrorType {
 	IoError,
-	//UnexpectedToken,
+	UnexpectedToken,
 	UnexpectedEOF,
 	InvalidNumeric,
+	InvalidToken,
 	InvalidBoolean
 }
 
 pub struct TlError {
 	etype: TlErrorType,
+	msg: String,
 	offset: usize
 }
 
 impl std::fmt::Display for TlError {
 	fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-		write!(fmt, "TlError [{:?}] @ {}", self.etype, self.offset)
+		write!(fmt, "TlError [{:?}] (@{}) : {}", self.etype, self.offset, self.msg)
 	}
 }
 
-const NUMERIC_LITERAL_MAX_CHARS: usize = 48;
-const SYMBOL_MAXW_CHARS: usize = 56;
-const STRING_LITERAL_MAXW_CHARS: usize = 2048;
-
-macro_rules! tl_error {
-	($etype: ident, $offset: expr) => {
-		Err(TlError { etype: TlErrorType::$etype, offset: $offset })
-	};
-}
-
-fn _parse_number(lead: u8, reader: &mut impl Read, offset: usize) -> Result<Token, TlError> {
-	// Ugly, but works I suppose. Ugly nonetheless..
-	// TODO: Fix this, if possible.
-
-	let mut charbuffer = [0u8; NUMERIC_LITERAL_MAX_CHARS];
-	let mut p = 1;	// Definitely not very Rust-like. 
-	
-	let mut is_float = false;
-
-	charbuffer[0] = lead;
-	for byte in reader.bytes() {
-		if p >= NUMERIC_LITERAL_MAX_CHARS {
-			return tl_error!(InvalidNumeric, offset + p);
-		}
-		match byte {
-			Ok(c) => {
-				if c.is_ascii_digit() {
-					charbuffer[p] = c;
-				} else if c == b'.' || c == b'E' || c == b'e' {
-					is_float = true;
-					charbuffer[p] = c;
-				} else if c.is_ascii_whitespace() {
-					break;
-				} else {
-					return tl_error!(InvalidNumeric, offset + p);
-				}
-				p += 1;
-			},
-			Err(e) => {
-				eprintln!("IoError while reading byte. {e:?}");
-				return tl_error!(IoError, offset + p);
-			}
-		}
+impl TlError {
+	fn from_ioerr(e: std::io::Error, offset: usize) -> Self {
+		TlError { etype: TlErrorType::IoError, msg: format!("{e}"), offset }
 	}
 
-	let s = core::str::from_utf8(&charbuffer[..p]).expect("Numeric type parser does not have valid charbuffer.");
-	p += offset;
+	fn eof<T>(stream: &CharStream<'_, T>) -> Self where T: Read {
+		TlError { etype: TlErrorType::UnexpectedEOF, msg: "Character stream terminated abruptly.".to_string(), offset: stream.byte_position() }
+	}
 
-	if is_float {
-		let v: f64 = s.parse().or_else(|_| tl_error!(InvalidNumeric, p))?;
-		Ok(Token { ttype: TokenType::Float(v), start: offset, end: p })
-	} else {
-		let v: i64 = s.parse().or_else(|_| tl_error!(InvalidNumeric, p))?;
-		Ok(Token { ttype: TokenType::Integer(v), start: offset, end: p })
+	fn is_eof(&self) -> bool {
+		matches!(self.etype, TlErrorType::UnexpectedEOF)
 	}
 }
 
-fn _parse_boolean(reader: &mut impl Read, offset: usize) -> Result<Token, TlErrorType> {
-	let nch = reader.bytes().next().ok_or(TlErrorType::UnexpectedEOF)?.map_err(|e| {
-		eprintln!("IoError while reading byte. {e:?}");
-		TlErrorType::IoError
-	})?;
-	match nch {
-		b't' => Ok(Token { ttype: TokenType::Boolean(true), start: offset, end: offset + 1 }),
-		b'f' => Ok(Token { ttype: TokenType::Boolean(false), start: offset, end: offset + 1 }),
-		_ => Err(TlErrorType::InvalidBoolean)
-	}
-}
+const TOKEN_DELIMS: &str = ")(][ \t\n;";
 
-fn _parse_symbol(lead: u8, reader: &mut impl Read, offset: usize) -> Result<Token, TlError> {
-
-	let mut p = offset + 1;
-	// Initialize char buffer.
-	let mut s = String::with_capacity(SYMBOL_MAXW_CHARS >> 1);
-	s.push(lead as char);
-	
-	for byte in reader.bytes() {
-		match byte {
-			Err(e) => {
-				eprintln!("IoError while reading byte. {e:?}");
-				return tl_error!(IoError, p);
-			},
-			Ok(u) => {
-				if u.is_ascii_whitespace() { break; }
-				s.push(u as char);
-				p += 1;
-				if s.len() > SYMBOL_MAXW_CHARS {
-					eprintln!("WARNING: Symbol \"{}..\" is too long. Consider renaming.", &s[..10]);
-				}
-			}
-		}
-	}
-	Ok(Token { ttype: TokenType::Symbol(s), start: offset, end: p})
-}
-
-fn _parse_escape_seq(reader: &mut impl Read, offset: usize) -> Result<char, TlError>{
-	match reader.bytes().next() {
-		Some(Ok(u)) => {
-			match u {
-				b't' => Ok('\t'),
-				b'n' => Ok('\n'),
-				b'r' => Ok('\r'),
-				a => Ok(a as char)
-			}
-		},
-		Some(Err(e)) => {
-			eprintln!("IoError while reading byte for escape sequence. {e:?}");
-			tl_error!(IoError, offset)
-		},
-		None => {
-			tl_error!(UnexpectedEOF, offset)
-		}
-	}
-}
-
-#[inline]
-fn _read_single_u8(reader: &mut impl Read, offset: usize) -> Result<u8, TlError> {
-	let mut single = [0u8];
-	match reader.read(&mut single) {
-		Ok(1) => Ok(single[0]),
-		Err(e) => {
-			eprintln!("IoError while reading byte. {e:?}");
-			tl_error!(IoError, offset)
-		},
-		_ => tl_error!(UnexpectedEOF, offset)
-	}
-}
-
-fn _parse_string(reader: &mut impl Read, offset: usize) -> Result<Token, TlError> {
-	
-	let mut p = offset;
-	let mut s = String::with_capacity(STRING_LITERAL_MAXW_CHARS >> 2);
-
+pub fn parse<T>(r: &mut T) -> Result<Sexpr, TlError>
+where T: Read {
+	let mut stream: CharStream<'_, T> = r.into();
+	let mut v = Vec::new();
 	loop {
-		let byte = reader.bytes().next();
-		match byte {
-			Some(Ok(a)) => {
-				if a == b'"' {
-					break;
-				} else if a == b'\\' {
-					s.push(_parse_escape_seq(reader, p)?);
-					p += 1;
-				} else {
-					s.push(a as char);
-				}
-				p += 1;
-			},
-			Some(Err(e)) => {
-				eprintln!("IoError while reading byte. {e:?}");
-				return tl_error!(IoError, p);
-			},
-			None => {
-				return tl_error!(UnexpectedEOF, p);
+		let ch = stream.skip_whitespace().map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?;
+		match ch {
+			None => { break; }, // EOF is expected here.
+			Some('(') => { v.push(parse_sexpr(&mut stream, ')')?); },
+			Some(';') => { parse_comment(&mut stream)?; },
+			Some(c) => {
+				return Err(TlError { etype: TlErrorType::UnexpectedToken, msg: format!("Root level S-expressions must use only '(', not '{c}'"), offset: stream.byte_position() });
 			}
 		}
 	}
-
-	Ok(Token { ttype: TokenType::Str(s), start: offset, end: p })
+	Ok(Sexpr::List(v))
 }
 
-// TODO: Fix all token parsing rules to terminate properly. Parentheses are included in token, this is wrong.
-fn _match_rule(byte: u8, reader: &mut impl Read, offset: &mut usize) -> Result<Sexpr, TlError> {
-	let exp = match byte {
-		b'(' => _parse_sexpr_r(b')', reader, offset)?,
-		b'[' => _parse_sexpr_r(b']', reader, offset)?,
-		b'#' => {
-			let t = _parse_boolean(reader, *offset).map_err(|etype| TlError {etype, offset: *offset})?;
-			*offset += 1;
-			Sexpr::Atom(t)
-		},
-		b'"' => {
-			let t = _parse_string(reader, *offset)?;
-			*offset = t.end;
-			Sexpr::Atom(t)
-		},
-		a if a.is_ascii_digit() => {
-			let t = _parse_number(a, reader, *offset)?;
-			*offset = t.end;
-			Sexpr::Atom(t)
-		},
-		a => {
-			let t = _parse_symbol(a, reader, *offset)?;
-			*offset = t.end;
-			Sexpr::Atom(t)
-		}
-	};
-	Ok(exp)
-}
-
-fn _parse_sexpr_r(term: u8, reader: &mut impl Read, offset: &mut usize) -> Result<Sexpr, TlError> {	// Poor sig. TODO: Re-write structs to have Sexpr offset.
-	let mut slist = Vec::new();
+/// Fetch characters from the stream and push into buffer, until one in the parameter string is found.
+/// Returns the last character read from the stream, or any IoErrors that occured.
+/// Returns `Err` if stream reaches EOF.
+fn cspan<T>(stream: &mut CharStream<'_, T>, delim: &'static str, buf: &mut String) -> Result<char, TlError>
+where T: Read {
 	loop {
-		let byte = _read_single_u8(reader, *offset)?;
-		*offset += 1;
-		if byte == term {
-			return Ok(Sexpr::List(slist));
-		} else if !byte.is_ascii_whitespace() {
-			slist.push(_match_rule(byte, reader, offset)?);
+		let ch = stream.next_char()
+			.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?
+			.ok_or_else(|| TlError::eof(stream))?;
+		if delim.contains(ch) {
+			return Ok(ch);
 		}
+		buf.push(ch);
 	}
 }
 
-pub fn parse(reader: &mut impl Read) -> Result<Sexpr, TlError> {
-	let mut offset = 0;
-	let mut slist = Vec::new();
+fn int_from_str_radix_auto(s: &str, offset: usize) -> Result<i64, TlError> {
+  let radix = match s.chars().nth(1) {
+  	Some('x') => 16,
+  	Some('b') => 2,
+  	Some('o') => 8,
+  	None => {
+  		// We already know 0 was the first character.
+  		return Ok(0);
+  	},
+  	Some(c) => {
+  		return Err(TlError { etype: TlErrorType::UnexpectedToken, msg: format!("Invalid radix prefix '0{c}'. Expected '0x', '0b', or '0o'."), offset})
+  	}
+  };
+  i64::from_str_radix(s.trim_start_matches(['0', 'x', 'o', 'b']), radix)
+  	.map_err(|e| {
+  		let msg = format!("'{s}' is not an integer in base {radix},\n\tdetail: {e}");
+  		TlError { etype: TlErrorType::InvalidNumeric, msg, offset }
+  	})
+}
 
-	loop {
-		let byte = _read_single_u8(reader, offset);
-		match byte {
-			Err(e) => {
-				match e.etype {
-					TlErrorType::UnexpectedEOF => {
-						break;
-					},
-					_ => {
-						return Err(e);
-					}
-				}
-			},
-			Ok(byte) => {
-				offset += 1;
-				if !byte.is_ascii_whitespace() {
-					slist.push(_match_rule(byte, reader, &mut offset)?);
+fn parse_string<T>(_stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+where T: Read {
+	todo!("Implement a string parser, with escape-sequence translation.")
+}
+
+fn parse_char<T>(_stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+where T: Read {
+	todo!("Parse a single character with escape-sequence translation.")
+}
+
+fn parse_comment<T> (stream: &mut CharStream<'_, T>) -> Result<(), TlError>
+where T: Read {
+	stream
+		.skip_till('\n')
+		.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))
+		.and_then(|c| {
+			if c { Err(TlError::eof(stream)) } else { Ok(()) }
+		})
+}
+
+fn match_parse_literal (ch: char, buf: String, start: usize, end: usize) -> Result<Sexpr, TlError> {
+	// First match the basic ones
+	if buf == "#t" {	// If the whole text is the TRUE boolean literal, then that's the Sexpr.
+		Ok(Sexpr::Atom(Token { ttype: TokenType::Boolean(true), start, end}))
+	} else if buf == "#f" { // Similarly for FALSE.
+		Ok(Sexpr::Atom(Token { ttype: TokenType::Boolean(false), start, end }))
+	// If lead character is alphabetic or '_', then token is a symbol.
+	} else if ch.is_alphabetic() || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
+		Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end})) // Symbol
+	// If lead character is '0', then the token is either the integer 0, or an integer in hex, binary, or octal
+	} else if ch == '0' {
+		let value = int_from_str_radix_auto(&buf, start)?;
+		return Ok(Sexpr::Atom(Token { ttype: TokenType::Integer(value), start, end}));
+	// Alternatively, if the lead character is a decimal digit, or '+', '-', the token is of numeric type.
+	} else if ch.is_ascii_digit() || ch == '-' || ch == '+' {
+		// Attempt to parse text as integer.
+		match buf.parse() { Ok(i) => { return Ok(Sexpr::Atom(Token { ttype: TokenType::Integer(i), start, end}));},
+			Err(_) => match buf.parse() { // Attempt to parse as float.
+				Ok(f) => { return Ok(Sexpr::Atom(Token { ttype: TokenType::Float(f), start, end}));},
+				Err(_) => {	// This token is neither an integer nor floating point.
+					return Err(TlError { etype: TlErrorType::InvalidNumeric, msg: format!("'{buf}' is neither an integer nor a floating point literal."), offset: start });
 				}
 			}
-		};
+		}
+	} else { // Any other 'ch', i.e, one that is neither alphabetic, _, nor ascii digit, constitutes a symbol.
+		// These symbols are not good, so emit a warning/note.
+		eprintln!("Note: If token '{buf}' (@ {}) is a symbol, consider starting with an alphabet or '_'", start);
+		Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end}))
 	}
-	Ok(Sexpr::List(slist))
+}
+
+fn match_rule<T>(stream: &mut CharStream<'_, T>, v: &mut Vec<Sexpr>, ch: char, close_char: char) -> Result<bool, TlError> 
+where T: Read {
+	match ch {
+		'\'' => v.push(parse_char(stream)?),
+		'"' => v.push(parse_string(stream)?),
+		'(' => v.push(parse_sexpr(stream, ')')?),
+		'[' => v.push(parse_sexpr(stream, ']')?),
+		';' => parse_comment(stream)?,
+		_ => {
+			let mut buf = String::new(); buf.push(ch);
+			
+			let start = stream.byte_position()-1;
+			
+			// Keep track of the terminating character, since it can imply another expr, or termination of this one.
+			let term = cspan(stream, TOKEN_DELIMS, &mut buf)?;
+			
+			let end = stream.byte_position()-1;
+
+			// Parse-Match buffer with corresponding literal.
+			v.push(match_parse_literal(ch, buf, start, end)?);			
+
+			if term == close_char {
+				return Ok(true); // We're done, this was possibly the last character of the Sexpr.
+			} 
+
+			// TODO: Fix ugly nested match arm.
+
+			match term {
+				')' | ']' => {
+					return Err(TlError {
+						etype: TlErrorType::UnexpectedToken, 
+						msg: format!("Cannot end token with '{ch}', perhaps you meant '{close_char}'?"), 
+						offset: start }
+						);
+				},
+				'(' => v.push(parse_sexpr(stream, ')')?),
+				'[' => v.push(parse_sexpr(stream, ']')?),
+				';' => parse_comment(stream)?,
+				c if c.is_whitespace() => { /* do nothing */ },
+				c => {
+					panic!("Token span has ended on a character ({c}) outside TOKEN_DELIMS!");
+				}
+			}
+		}
+	}
+	Ok(false)
+}
+
+fn parse_sexpr<T>(stream: &mut CharStream<'_, T>, close_char: char) -> Result<Sexpr, TlError>
+where T: Read {
+	let mut v = Vec::new();
+	loop {
+		let ch = stream.skip_whitespace()
+		.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?
+		.ok_or_else(|| TlError::eof(stream))?;
+		if ch == close_char { break; }
+		if match_rule(stream, &mut v, ch, close_char)? {
+			break;
+		}
+	}
+	Ok(Sexpr::List(v))
 }

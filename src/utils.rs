@@ -1,7 +1,7 @@
-use std::io::Write;
-use std::io::BufWriter;
+use std::io::{Write, BufWriter, Read};
 use std::fs::File;
 use crate::core::{FatalErr, ErrorType, new_error};
+
 pub(crate) struct SliceView<'a> {
 	idx: usize,
 	buf: &'a [u8]
@@ -162,5 +162,142 @@ impl core::fmt::Display for BitSet {
 			writeln!(fmt, "{:016b}", self.data[i])?;
 		}
 		write!(fmt, "}}")
+	}
+}
+
+use std::io::Result as IoResult;
+
+const BYTEBUF_SIZE: usize = 2048;
+
+/// Buffered Character streaming for `Read` streams.
+pub struct CharStream<'a, T: Read> {
+	buffer: [u8; BYTEBUF_SIZE],
+	/// The offset to start writing into the byte buffer from.
+	bstart: usize,
+	/// The buffer to store chars.
+	chars: String,
+	/// The byte offset from which the next character in string can be read.
+	offset: usize,
+	/// The number of bytes read.
+	position: usize,
+	/// The last character read. Initially set to None.
+	last: Option<char>,
+	reader: &'a mut T
+}
+
+impl<'a, T: Read> From<&'a mut T> for CharStream<'a, T> {
+	fn from(a: &'a mut T) -> Self {
+		CharStream { 
+			chars: String::new(), 
+			offset: 0, position: 0,
+			bstart: 0,
+			reader: a,
+			last: None,
+			buffer: [0; BYTEBUF_SIZE]
+		}
+	}
+}
+
+impl<T: Read> CharStream<'_, T> {
+	/// Read next character, if possible. Returns Ok(None) when no characters are left.
+	/// As with `Read`, once None is returned, subsequent calls may be __non-null__, once the stream has taken more data.
+	/// Returns Err if stream contains invalid utf-8 data.
+	pub fn next_char(&mut self) -> IoResult<Option<char>> {
+		if self.offset == self.chars.len() {
+			// All contents of buffer have been read.
+			if !self.fill_buffer()? {
+				// Can't refil, so we're done.
+				return Ok(None);
+			}
+		}
+
+		let r = self.chars[self.offset..].chars().next().inspect(|ch| {
+			self.offset += ch.len_utf8();
+		});
+		
+		self.last.clone_from(&r);
+		Ok(r)
+	}
+
+	// Return true if any chars were translated, false otherwise.
+	fn fill_buffer(&mut self) -> IoResult<bool>{
+		let nread = self.reader.read(&mut self.buffer[self.bstart..])?;
+		self.position += nread;
+		
+		let blen = nread + self.bstart;
+
+		self.chars.clear();
+		self.offset = 0;
+
+		// No characters left.. stream has most likely reached the end.
+		if blen == 0 {
+			return Ok(false);
+		}
+
+		let (s, v) = match std::str::from_utf8(&self.buffer[..blen]) {
+			Ok(s) => (s, blen),
+			Err(e) => {
+				if e.valid_up_to() == 0 {
+					// Unlikely that nonthing in the buffer could be translated, unless the buffer was empty.
+					// But that's handled.
+					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 data."));
+				} else {
+					// (blen - valid_up_to) bytes were not translated, so don't discard them.
+					// If nothing was translated, then .. we have an error.
+					(unsafe { std::str::from_utf8_unchecked(&self.buffer[..e.valid_up_to()]) }, e.valid_up_to())
+				}
+			}
+		};
+
+		self.chars.push_str(s);
+		self.buffer.copy_within(v.., 0);
+		self.bstart = blen - v;
+
+		Ok(true)
+	}
+
+	/// The position since start of stream, of the current character.
+	pub fn byte_position(&self) -> usize {
+		self.position - self.chars.len() + self.offset
+	}
+
+	/// Get the most recent character returned by `next_char`.
+	/// If `next_char` has never been called, returns `None`. 
+	pub fn last_char(&self) -> Option<char> {
+		self.last
+	}
+
+	/// Read and discard characters from the stream that are whitespaces.
+	/// Returns `None` if stream has reached eof.
+	pub fn skip_whitespace(&mut self) -> IoResult<Option<char>> {
+		loop {
+			let ch = self.next_char()?;
+			match ch {
+				None => { return Ok(ch) },
+				Some(c) if !c.is_whitespace() => { return Ok(ch); },
+				_ => {}
+			}
+		}
+	}
+
+	/// Read and discard characters from stream until it has terminated or the target character has been read.
+	/// Returns `Ok(true)` if stream reached EOF. Returns `Err` if any IoErrors occurred during the process.
+	pub fn skip_till(&mut self, target: char) -> IoResult<bool>
+	where T: Read {
+		loop {
+			let ch = self.next_char()?;
+			match ch {
+				None => { return Ok(true) },
+				Some(c) if c == target => { return Ok(false); },
+				_ => {}
+			}
+		}
+	}
+}
+
+impl<'a, T: Read> Iterator for CharStream<'a, T> {
+	type Item = IoResult<char>;
+	fn next(&mut self) -> std::option::Option<<Self as std::iter::Iterator>::Item> {
+		self.next_char().transpose()
 	}
 }
