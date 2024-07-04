@@ -180,8 +180,8 @@ pub struct CharStream<'a, T: Read> {
 	offset: usize,
 	/// The number of bytes read.
 	position: usize,
-	/// The last character read. Initially set to None.
-	last: Option<char>,
+	/// The number of newline characters read.
+	nlines: usize,
 	reader: &'a mut T
 }
 
@@ -192,7 +192,7 @@ impl<'a, T: Read> From<&'a mut T> for CharStream<'a, T> {
 			offset: 0, position: 0,
 			bstart: 0,
 			reader: a,
-			last: None,
+			nlines: 0,
 			buffer: [0; BYTEBUF_SIZE]
 		}
 	}
@@ -213,9 +213,11 @@ impl<T: Read> CharStream<'_, T> {
 
 		let r = self.chars[self.offset..].chars().next().inspect(|ch| {
 			self.offset += ch.len_utf8();
+			if *ch == '\n' {
+				self.nlines += 1;
+			}
 		});
-		
-		self.last.clone_from(&r);
+
 		Ok(r)
 	}
 
@@ -261,10 +263,9 @@ impl<T: Read> CharStream<'_, T> {
 		self.position - self.chars.len() + self.offset
 	}
 
-	/// Get the most recent character returned by `next_char`.
-	/// If `next_char` has never been called, returns `None`. 
-	pub fn last_char(&self) -> Option<char> {
-		self.last
+	/// Get the number of newline characters read from this stream + 1. 
+	pub fn lineno(&self) -> usize {
+		self.nlines + 1
 	}
 
 	/// Read and discard characters from the stream that are whitespaces.

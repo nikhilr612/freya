@@ -1,4 +1,4 @@
-//! Module for SExpr parser. This parser does not handle unicode characters. ASCII only.
+//! Module for SExpr parser. This parser can handle unicode characters reasonably well.
 //! Builds a tree of tokens.
 
 // TODO: Extremely verbose. Desperately needs a re-write.
@@ -16,7 +16,7 @@ enum TokenType {
 	/// Float/Decimal literal.
 	Float(f64),
 	/// Character literal.
-	Char(u8),
+	Char(char),
 	/// String literal.
 	Str(String),
 	/// Symbol token.
@@ -24,7 +24,8 @@ enum TokenType {
 }
 
 /// Actual token read from input.
-/// Contains line number, and start character.
+/// Contains line number, and offset.
+/// Clearly, since offset alone can absolutely locate the token in the stream, line number appears to be redundant, however, it is tracked for debugging purposes.
 #[derive(Debug)]
 pub struct Token {
 	/// The token type.
@@ -32,7 +33,15 @@ pub struct Token {
 	/// Start offset.
 	start: usize,
 	/// End offset.
-	end: usize
+	end: usize,
+	/// The line on which the token occurs.
+	line: usize
+}
+
+macro_rules! atom {
+	($variant:ident ($v: expr), $start:expr , $end:expr, $line:expr) => {
+		Ok(Sexpr::Atom( Token { ttype: TokenType::$variant($v), start: $start, end: $end, line: $line } ))
+	};
 }
 
 #[derive(Debug)]
@@ -49,7 +58,8 @@ pub enum TlErrorType {
 	IoError,
 	UnexpectedToken,
 	UnexpectedEOF,
-	InvalidNumeric
+	InvalidNumeric,
+	InvalidChar
 }
 
 pub struct TlError {
@@ -94,15 +104,22 @@ where T: Read {
 	Ok(Sexpr::List(v))
 }
 
+#[inline]
+/// Helper function to call `stream.next_char` and map errors to TlErrors.
+fn expect_char<T>(stream: &mut CharStream<'_, T>) -> Result<char, TlError>
+where T: Read {
+	stream.next_char()
+		.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?
+		.ok_or_else(|| TlError::eof(stream))
+}
+
 /// Fetch characters from the stream and push into buffer, until one in the parameter string is found.
 /// Returns the last character read from the stream, or any IoErrors that occured.
 /// Returns `Err` if stream reaches EOF.
 fn cspan<T>(stream: &mut CharStream<'_, T>, delim: &'static str, buf: &mut String) -> Result<char, TlError>
 where T: Read {
 	loop {
-		let ch = stream.next_char()
-			.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?
-			.ok_or_else(|| TlError::eof(stream))?;
+		let ch = expect_char(stream)?;
 		if delim.contains(ch) {
 			return Ok(ch);
 		}
@@ -130,14 +147,75 @@ fn int_from_str_radix_auto(s: &str, offset: usize) -> Result<i64, TlError> {
   	})
 }
 
-fn parse_string<T>(_stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+fn parse_unicode_hex<T>(stream: &mut CharStream<'_, T>) -> Result<char, TlError>
 where T: Read {
-	todo!("Implement a string parser, with escape-sequence translation.")
+	let s: Result<String, std::io::Error> = stream.take(4).collect();
+	let s = s.map_err(|e| TlError::from_ioerr(e, stream.byte_position()))?;
+	if s.len() < 4 {
+		Err(TlError { etype: TlErrorType::UnexpectedEOF, msg: format!("Unicode escape requires exactly 4 hex digits, but only '{s}' was provided."), offset: stream.byte_position() })
+	} else {
+		u32::from_str_radix(&s, 16)
+			.map_err(|e| 
+				TlError { etype: TlErrorType::InvalidChar, msg: format!("'{s}' is not a valid 4-digit hex for unicode escape sequence.\n\tdetail: {e}"), offset: stream.byte_position() 
+			})
+			.and_then(|v| {
+				char::from_u32(v)
+				.ok_or_else(||
+					TlError { etype: TlErrorType::InvalidChar, msg: format!("Hex '{s}' does not signify a character."), offset: stream.byte_position() 
+				})
+			})
+	}
 }
 
-fn parse_char<T>(_stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+fn parse_char_raw<T>(stream: &mut CharStream<'_, T>) -> Result<(char, bool), TlError>
 where T: Read {
-	todo!("Parse a single character with escape-sequence translation.")
+	let ch = expect_char(stream)?;
+	if ch != '\\' {
+		Ok((ch, false))
+	} else {
+		let ch = expect_char(stream)?;
+		Ok((match ch {
+			'\''=> '\'',
+			'"' => '"',
+			'n' => '\n',
+			't' => '\t',
+			'r' => '\r',
+			'u' => parse_unicode_hex(stream)?,
+			a => {
+				return Err(TlError { etype: TlErrorType::InvalidChar, msg: format!("Unknown escape sequence \\{a}. Only \\\', \\\",\\r, \\n, \\t, \\uXXXX are allowed."), offset: stream.byte_position() })
+			}
+		}, true))
+	}
+}
+
+fn parse_string<T>(stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+where T: Read {
+	let (start, start_line) = (stream.byte_position(), stream.lineno());
+	
+	let mut s = String::new();
+	loop {
+		let (ch, esc) = parse_char_raw(stream)?;
+		if !esc && ch == '\"' {
+			break;
+		} else {
+			s.push(ch);
+		}
+	}
+
+	atom!(Str(s), start, stream.byte_position(), start_line)
+	//Ok(Sexpr::Atom(Token { ttype: TokenType::Str(s), start, end: stream.byte_position() }))
+}
+
+fn parse_char<T>(stream: &mut CharStream<'_, T>) -> Result<Sexpr, TlError>
+where T: Read {
+	let (start, start_line) = (stream.byte_position(), stream.lineno());
+	// The single quote has already been read, so..
+	let (ch, _esc) = parse_char_raw(stream)?;
+	if expect_char(stream)? != '\'' {
+		Err(TlError { etype: TlErrorType::InvalidChar, msg: format!("Character literal '{ch}' must be enclosed by single quotes."), offset: stream.byte_position() })
+	} else {
+		atom!(Char(ch), start, stream.byte_position(), start_line)
+	}
 }
 
 fn parse_comment<T> (stream: &mut CharStream<'_, T>) -> Result<(), TlError>
@@ -150,47 +228,77 @@ where T: Read {
 		})
 }
 
-fn match_parse_literal (ch: char, buf: String, start: usize, end: usize) -> Result<Sexpr, TlError> {
-	// First match the basic ones
+fn match_parse_literal (ch: char, buf: String, start: usize, end: usize, lineno: usize) -> Result<Sexpr, TlError> {
+
+	// ---------------------------------------------------- //
+	// First match the basic ones. Boolean.
+
 	if buf == "#t" {	// If the whole text is the TRUE boolean literal, then that's the Sexpr.
-		Ok(Sexpr::Atom(Token { ttype: TokenType::Boolean(true), start, end}))
+		atom!(Boolean(true), start, end, lineno)
 	} else if buf == "#f" { // Similarly for FALSE.
-		Ok(Sexpr::Atom(Token { ttype: TokenType::Boolean(false), start, end }))
+		atom!(Boolean(false), start, end, lineno)
+
+	// ----------------------------------------------------- //
 	// If lead character is alphabetic or '_', then token is a symbol.
+
 	} else if ch.is_alphabetic() || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
-		Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end})) // Symbol
+		atom!(Symbol(buf), start, end, lineno) // Symbol
+	
+	// ----------------------------------------------------- //
+	// Match integer or floating (numeric) type tokens.
+
 	// If lead character is '0', then the token is either the integer 0, or an integer in hex, binary, or octal
 	} else if ch == '0' {
 		let value = int_from_str_radix_auto(&buf, start)?;
-		return Ok(Sexpr::Atom(Token { ttype: TokenType::Integer(value), start, end}));
+		return atom!(Integer(value), start, end, lineno);
+
 	// Alternatively, if the lead character is a decimal digit, or '+', '-', the token is of numeric type.
 	} else if ch.is_ascii_digit() || ch == '-' || ch == '+' {
+
 		// Attempt to parse text as integer.
-		match buf.parse() { Ok(i) => { return Ok(Sexpr::Atom(Token { ttype: TokenType::Integer(i), start, end}));},
-			Err(_) => match buf.parse() { // Attempt to parse as float.
-				Ok(f) => { return Ok(Sexpr::Atom(Token { ttype: TokenType::Float(f), start, end}));},
-				Err(_) => {	// This token is neither an integer nor floating point.
-					return Err(TlError { etype: TlErrorType::InvalidNumeric, msg: format!("'{buf}' is neither an integer nor a floating point literal."), offset: start });
+		match buf.parse() { 
+			Ok(i) => {
+				return atom!(Integer(i), start, end, lineno);
+			},
+			Err(_) => match buf.parse() { // Failed, try to parse as float.
+				Ok(f) => { 
+					return atom!(Float(f), start, end, lineno);
+				},
+				Err(_) => {	// This token is neither an integer nor floating point literal.
+					return Err(TlError {
+						etype: TlErrorType::InvalidNumeric, 
+						msg: format!("'{buf}' is neither an integer nor a floating point literal."), 
+						offset: start 
+					});
 				}
 			}
 		}
-	} else { // Any other 'ch', i.e, one that is neither alphabetic, _, nor ascii digit, constitutes a symbol.
-		// These symbols are not good, so emit a warning/note.
-		eprintln!("Note: If token '{buf}' (@ {}) is a symbol, consider starting with an alphabet or '_'", start);
-		Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end}))
+	
+	// ----------------------------------------------------- //
+	// Any other 'ch', i.e, one that is neither alphabetic, _, nor ascii digit, constitutes a symbol.
+
+	} else { 
+		// These symbols are no good, so emit a warning/note.
+		eprintln!("Note: If token '{buf}' (@ {}) is a symbol, consider renaming with an alphabet or '_' as the first character", start);
+		// Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end}))
+		atom!(Symbol(buf), start, end, lineno)
 	}
 }
 
 fn match_rule<T>(stream: &mut CharStream<'_, T>, v: &mut Vec<Sexpr>, ch: char, close_char: char) -> Result<bool, TlError> 
 where T: Read {
 	match ch {
-		'\'' => v.push(parse_char(stream)?), '"' => v.push(parse_string(stream)?),
+		'"' => v.push(parse_string(stream)?),
+		// Note: Here, the general 'char literals in single-quotes' convention is preferred over the traditional scheme solution of `#\char`.
+		// For our purposes, the special form of quote will not have the shorthand ', so it is reasonable to use the character here.
+		'\''=> v.push(parse_char(stream)?),
 		'(' => v.push(parse_sexpr(stream, ')')?), '[' => v.push(parse_sexpr(stream, ']')?),
 		';' => parse_comment(stream)?,
 		_ => {
 			let mut buf = String::new(); buf.push(ch);
 			
 			let start = stream.byte_position()-1;
+			let start_line = stream.lineno();
 			
 			// Keep track of the terminating character, since it can imply another expr, or termination of this one.
 			let term = cspan(stream, TOKEN_DELIMS, &mut buf)?;
@@ -198,7 +306,7 @@ where T: Read {
 			let end = stream.byte_position()-1;
 
 			// Parse-Match buffer with corresponding literal.
-			v.push(match_parse_literal(ch, buf, start, end)?);			
+			v.push(match_parse_literal(ch, buf, start, end, start_line)?);			
 
 			if term == close_char {
 				return Ok(true); // We're done, this was possibly the last character of the Sexpr.
