@@ -1,14 +1,16 @@
-(define APERY 1.2020569)
-(define Release #f)
-(define PLANCK 6.62e-34)
-(define MAGIC 0xb00b)
+; Test file.
+; check out some of the literals
+(define APERY 1.2020569) ; floating-point (double)
+(define Release #f)						; boolean
+(define PLANCK 6.62e-34) ; another flt, just cause
+(define MAGIC 0xb00b)				; integer, hex literal.
 (define (main) (print "Greetings to you!"))
 ; nop can be used to write comments, but since single-line comments like these are possible..
-(define (other-fn ) 
+(define (other-fn )
 	(nop 
 		"This is some random stuff.. I doubt anyone cares"
 		"いろんなものを追加できます、ふふふ。"
 		"ನಾನು ಎಲ್ಲಾ ರೀತಿಯ ವಿಷಯಗಳನ್ನು ಬರೆಯಬಲ್ಲೆ.."
 	)
 ) ; they're rather unnecessary.
-(define A-MISTAKE' 123)
+(define A-MISTAKE' 123)	; integer, decimal literal

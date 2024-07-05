@@ -1,5 +1,13 @@
+use clap::builder::Styles;
+use clap::builder::styling::AnsiColor;
 use clap::ValueEnum;
 use clap::{Parser, Subcommand};
+
+const STYLE: Styles = Styles::styled()
+        .header(AnsiColor::BrightMagenta.on_default().bold().underline())
+        .usage(AnsiColor::Yellow.on_default())
+        .literal(AnsiColor::Blue.on_default().bold())
+        .placeholder(AnsiColor::Green.on_default());
 
 #[derive(Debug, Clone)]
 #[repr(u8)]
@@ -14,7 +22,7 @@ pub enum RefPolicy {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, styles = STYLE)]
 pub struct MainArgs {
 	#[command(subcommand)]
 	/// What subcommand to execute
@@ -38,7 +46,7 @@ pub enum Commands {
 	VerifyHeader { path: String },
 	/// Load and execute the given file.
 	#[clap(alias = "x")]
-	ExecNoArg {
+	Exec {
 		/// Path to the file which needs to be executed.
 		filepath: String,
 		#[arg(short, long)]
@@ -46,15 +54,21 @@ pub enum Commands {
 		pathlist: Vec<String>,
 		#[arg(short, long)]
 		/// List of native libraries that should be loaded on demand.
-		nlibpath: Vec<String>
+		nlibpath: Vec<String>,
+		#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+		/// Command line args passed to main.
+		cmdargs: Vec<String>
 	},
 	#[clap(alias = "asm")]
 	/// Assemble a source file to bytecode. If debug flag is set, line numbers are emitted.
 	Assemble { 
-		/// Path to the assembly file
+		/// Path to the assembly file, or a glob matching assembly files (requires --all flag)
 		path: String, 
-		/// Path to the output file.
-		output: Option<String>
+		/// Path to the output file (or directory).
+		output: Option<String>,
+		#[arg(short = 'a', long = "all")]
+		/// Flag to be set if input path is a glob matching assembly files.
+		is_glob: bool
 	},
 	/// Emit bytecode for a single source file.
 	#[clap(alias = "mc")]

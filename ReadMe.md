@@ -44,3 +44,5 @@ Composite types on the heap can be referred to by `ConstRef` and `MutRef` which 
 2. [memmap2](https://github.com/RazrFalcon/memmap2-rs): Cross-platform memory mapped I/O
 3. [paste](https://github.com/dtolnay/paste): Provides macros for concatenating identifiers in declarative macros used to limit duplication of code.
 4. [libloading](https://github.com/nagisa/rust_libloading/): Dynamically load shared libraries, and symbols from them.
+5. [glob](https://github.com/rust-lang/glob): Match file paths against UNIX-style patterns.
+6. [threadpool](https://github.com/rust-threadpool/rust-threadpool): Parallel execution of tasks.
