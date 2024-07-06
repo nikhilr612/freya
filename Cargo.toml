@@ -1,6 +1,6 @@
 [package]
 name = "freya"
-version = "0.2.5"
+version = "0.2.7"
 edition = "2021"
 authors = ["nikhilr"]
 description = "A simple experimental register-based process virtual machine."

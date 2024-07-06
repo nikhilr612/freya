@@ -454,7 +454,7 @@ pub fn asm(out:&mut BufWriter<File>, inf: &mut BufReader<File>, line_mut: &mut S
 			}
 		}
 		*lno += 1;
-		if emit_lines && mode == 0{
+		if emit_lines && mode == 0 {
 			out.write_u8(op::DBGLN).map_err(err_f)?;
 			out.write_u32(*lno as u32).map_err(err_f)?;
 		}

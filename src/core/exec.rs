@@ -27,25 +27,26 @@ struct CallFrame {
 }
 
 impl CallFrame {
-	fn from_fdecl(mp: &ModulePool, mpath: &str, ep: &str) -> CallFrame {
-		let mid = mp.id_by_name(mpath).map_err(|e| {eprintln!("Could not create CallFrame\n\tcause: {e}")}).unwrap();
+	fn from_fdecl(mp: &ModulePool, mpath: &str, ep: &str) -> (CallFrame, usize) {
+		let mid = mp.id_by_name(mpath).unwrap_or_else(|e| panic!("Could not create CallFrame\n\tcause: {e}"));
 		let mvec = mp.read_lock();	
 		let m = &mvec[mid];
-		let fnid = m.func_id(ep).map_err(|e| {eprintln!("Could not create CallFrame\n\tcause: {e}")}).unwrap();
+		let fnid = m.func_id(ep).unwrap_or_else(|e| panic!("Could not create CallFrame\n\tcause: {e}"));
 		let fdc = m.fdecl_by_id(fnid);
+		let n = fdc.nparam.into();
 		let mut rvec = Vec::new();
 		let ip = fdc.offset as usize;
 		for _i in 0..fdc.nregs {
 			rvec.push(None);
 		}
-		CallFrame {
+		(CallFrame {
 			module_id: mid,
 			regs: rvec,
 			rslot: None,
 			function_id: fnid,
 			debug_lnum: 0,
 			ip
-		}
+		}, n)
 	}
 
 	fn from_fnid(mp: &ModulePool, mid: usize, fid: usize) -> (CallFrame, usize) {
@@ -501,10 +502,30 @@ macro_rules! instr_2arg {
 }
 
 impl WorkerThread {
+	/// Create a new WorkerThread for module `mpath` with entry point `ep`.
+	#[allow(dead_code)]
 	pub fn new(mpath: &str, ep: &str, refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>) -> WorkerThread {
-		let cf = CallFrame::from_fdecl(&mp, mpath, ep);
-		let mut stack = Vec::new();
-		stack.push(cf);	// Load main onto stack.
+		let (cf, _) = CallFrame::from_fdecl(&mp, mpath, ep);
+		let stack = vec![cf]; // Load main onto stack.
+		WorkerThread {
+			refc: RefCounter::new(refp),
+			stack,
+			pool: mp,
+			nifp
+		}
+	}
+
+	/// Create a new WorkerThread for module `mpath` with entry point `ep`. 
+	pub fn with_args<T>(mpath: &str, ep: &str, 
+		refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>,
+		args: T
+	) -> WorkerThread
+	where T: Iterator<Item = BaseType> {
+		let (mut cf, n) = CallFrame::from_fdecl(&mp, mpath, ep);
+		for (i, a) in args.take(n).enumerate() {
+			cf.regs[i].replace(a);
+		}
+		let stack = vec![cf]; // Load main onto stack.
 		WorkerThread {
 			refc: RefCounter::new(refp),
 			stack,
@@ -521,7 +542,7 @@ impl WorkerThread {
 			let fname = fmod.name_by_id(frame.function_id).unwrap();
 			let mname = &fmod.name;
 			if frame.debug_lnum != 0 {
-				eprintln!("\t@{fname}\t[{}:{:#06x}], {mname}", frame.ip, frame.debug_lnum);
+				eprintln!("\t@{fname}\t[{}:{:#06x}], {mname}", frame.debug_lnum, frame.ip);
 			} else {
 				eprintln!("\t@{fname}\t[{:#06x}], {mname}", frame.ip)
 			}

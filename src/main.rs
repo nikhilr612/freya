@@ -137,6 +137,7 @@ fn main() -> ExitCode {
         },
         args::Commands::Exec {filepath, pathlist, nlibpath, cmdargs} => {
             trace!("Recevied cmdargs: {cmdargs:#?}");
+            let to_pass = core::list_from_strings(cmdargs.into_iter());
 
             let mut nifp = native::InterfacePool::default();
             for path in nlibpath {
@@ -157,7 +158,12 @@ fn main() -> ExitCode {
             let mp = Arc::new(mp);
 
             let ep = cli.entry_pt.unwrap_or("main".to_string());
-            let mut wt = exec::WorkerThread::new(&filepath, &ep, cli.refctl, mp.clone(), nifp.clone());
+            
+            let mut wt = exec::WorkerThread::
+                        with_args(&filepath, &ep, 
+                            cli.refctl, mp.clone(), nifp.clone(),
+                            std::iter::once(to_pass));
+
             let res = wt.begin();
             on_error_exit_gracefully!(res, e, {
                 eprintln!("{}", e);
@@ -181,8 +187,8 @@ fn main() -> ExitCode {
             let ast = match emit::parse(&mut reader) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("{}", e);
-                    eprintln!("Parsing failed.");
+                    error!("{}", e);
+                    error!("Parsing failed.");
                     return ExitCode::FAILURE;
                 }
             };

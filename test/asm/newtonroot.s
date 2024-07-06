@@ -2,7 +2,7 @@
 	f64 0.6, $StartVal
 
 .extern 1
-	.ef test/mathutil:derivative_at, @diff_fn
+	.ef asm/mathutil:derivative_at, @diff_fn
 
 # Apply newton's root approximation method to solve numerically, f(x) = 0
 .fdecl 3

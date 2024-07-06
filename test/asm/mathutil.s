@@ -84,7 +84,7 @@ simps_fn:
 		ldi 1, %8
 		bt& %6, %7, %7
 		inc %7, 1
-		lsh %8, %7, %7
+		bls %8, %7, %7
 		stdcall %0, %9, %1
 		mul %8, %7, %8
 		add %5, %8, %5

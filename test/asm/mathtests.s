@@ -5,8 +5,8 @@
 # Simpson wins!
 
 .extern 2
-	.ef test/mathutil:integral_on, @rect_integral_fn
-	.ef test/mathutil:simps_integral, @simpson_integ_fn
+	.ef asm/mathutil:integral_on, @rect_integral_fn
+	.ef asm/mathutil:simps_integral, @simpson_integ_fn
 
 .fdecl 2
 	.df target_fn, 1, 2, @target_fn
