@@ -97,11 +97,12 @@ pub const BRANCH: u8 = 0x49;
 /// ip <- addr
 pub const JUMP: u8 = 0x4a;
 
-// fstcall r1, r2, r3
+// fstcall r1, r2, r3, n
 // r1 is the register with callable.
-// (r2-1) is the register to store return value. If r2 is zero, return value is not stored.
+// (r2-1) is the register to store return value. If r2 is zero, return value is discarded.
 // r3 is the register starting from which the arguments are read, i.e, if function requires n parameters then the registers r3, r3+1, r3+2, ..., r3+(n-1) are read.
-// pub const FSTCALL: u8 = 0x11;
+// n is the number of parameters.
+pub const FSTCALL: u8 = 0x11;
 
 /// No-op instruction. Does nothing.
 pub const NOP: u8 = 0x50;
@@ -144,7 +145,10 @@ pub const NEWRANGE:u8= 0x6c;
 /// if r1 then r2 <- r1.pop() else ip <- addr;
 pub const POPOR: u8 = 0x6d;
 
-/// stdcall r1, r2
+/// stdcall r1, r2, rparam...
+/// r1 is the register with the callable.
+/// (r2-1) is the register to store return value. If r2 is zero, return value is discarded.
+/// each of rparam.. are registers whose values are arguments for the function call.
 pub const STDCALL: u8 = 0x12;
 /// r1 <- [i16] Obtain FRef Alloc for function within the module.
 pub const LDF: u8 = 0x13;

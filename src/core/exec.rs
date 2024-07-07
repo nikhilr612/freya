@@ -3,6 +3,7 @@ use std::str::FromStr;
 use core::time::Duration;
 use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, hash_map::Entry};
+use core::concat;
 
 use crate::core::module::{ModulePool, ResolutionStatus, PoolWriteGuard};
 use crate::core::types::{self, BaseType, FatalErr, ErrorType, new_error};
@@ -69,6 +70,10 @@ impl CallFrame {
 		}, n)
 	}
 
+	#[deprecated(
+		since = "0.2.6",
+		note = "Usage of this function is generally bad design in 'look before you leap' context."
+	)]
 	fn get_reg_id(&self, r: u8) -> FResult<usize> {
 		let r = r as usize;
 		if r >= self.regs.len() {
@@ -77,26 +82,36 @@ impl CallFrame {
 		Ok(r)
 	}
 
+	/// 'Read' register `r`.
+	/// Returns an immutable reference to the value stored at index `r.
+	/// Returns `Err` if register id `r` is invalid, or register is empty.
 	fn read_register(&self, r: u8) -> FResult<&BaseType> {
-		let r = self.get_reg_id(r)?;
-		let rval = match &self.regs[r] {
-			Some(r) => r,
-			None => {
-				return Err(new_error(ErrorType::EmptyRegister, format!("Register {r} is empty; expecting value.")));
-			}
-		};
-		Ok(rval)
+		self.regs.get(r as usize)
+		.ok_or_else(|| {
+			new_error(ErrorType::InvalidRegister, 
+				format!("Invalid register id {r}, max allocated {}",self.regs.len()))
+		})?
+		.as_ref()
+		.ok_or_else(|| {
+			new_error(ErrorType::EmptyRegister,
+				format!("Register {r} is empty; expecting value."))
+		})
 	}
 
+	/// 'Read' register `r` mutably.
+	/// Returns `Err` if register id `r` is invalid, or register is empty.
 	fn read_mutregst(&mut self, r: u8) -> FResult<&mut BaseType> {
-		let r = self.get_reg_id(r)?;
-		let rval = match &mut self.regs[r] {
-			Some(r) => r,
-			None => {
-				return Err(new_error(ErrorType::EmptyRegister, format!("Register {r} is empty; expecting value.")));
-			}
-		};
-		Ok(rval)	
+		let n = self.regs.len();
+		self.regs.get_mut(r as usize)
+		.ok_or_else(|| {
+			new_error(ErrorType::InvalidRegister, 
+				format!("Invalid register id {r}, max allocated {n}"))
+		})?
+		.as_mut()
+		.ok_or_else(|| {
+			new_error(ErrorType::EmptyRegister,
+				format!("Register {r} is empty; expecting value."))	
+		})
 	}
 
 	fn _write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
@@ -107,14 +122,31 @@ impl CallFrame {
 		Ok(())
 	}
 
+	/// 'Write' value `val` into register `r`, dropping ('cleaning up') the previous value.
+	/// Performs any necessary reference decrements required.
 	fn write_register(&mut self, r: u8, val: BaseType, rc: &mut RefCounter) -> FResult<()> {
-		let rid = self.get_reg_id(r)?;
-		self._write_unchecked(rid, Some(val), rc)
+		self.drop_register(r, rc)?;
+		self.regs[r as usize].replace(val);
+		Ok(())
 	}
 
+	/// 'Drop' value in register `r`. Does nothing if the register was empty.
+	/// Performs any necessary reference decrements required.
+	/// Returns `Err` if register `r` is invalid.
 	fn drop_register(&mut self, r: u8, rc: &mut RefCounter) -> FResult<()> {
-		let rid = self.get_reg_id(r)?;
-		self._write_unchecked(rid, None, rc)
+		let n = self.regs.len();
+		let v  = self.regs.get_mut(r as usize)
+			.ok_or_else(|| {
+				new_error(ErrorType::InvalidRegister, 
+					format!("Invalid register id {r}, max allocated {n}"))
+			})?
+			.take();
+
+		if let Some(b) = v {
+			Self::cleanup_value(b, rc)?;
+		}
+
+		Ok(())
 	}
 
 	fn move_register(&mut self, r1: u8, r2: u8, rc: &mut RefCounter) -> FResult<()> {
@@ -515,6 +547,28 @@ impl WorkerThread {
 		}
 	}
 
+	/// Call a resolved callable in register `callr` with parameters `param` (possible in tail call manner if `is_tc`)
+	fn _common_call(&mut self, callr: u8, param: Vec<Option<BaseType>>, is_tc: bool) -> FResult<()> {
+		let val = self.stack.last().expect("Ultimate cockup. Common call initiated with empty stack").read_register(callr)?;
+		let (mod_id, func_id, native) = _extract_finfo(val)?;
+
+		if native {
+			todo!("Implement native function calls.")
+		}
+
+		let new_frame = _make_frame(param, &self.pool, mod_id, func_id)?;
+
+		if is_tc {
+			let idx = self.stack.len() -1; 
+			let old_frame = std::mem::replace(&mut self.stack[idx], new_frame);	// Replace the top-most frame in case of tail-call,
+			old_frame.release(&mut self.refc)?									// and release the old frame
+		} else {
+			self.stack.push(new_frame);	    									// Push a new frame in the normal case.
+		}
+
+		Ok(())
+	}
+
 	/// Create a new WorkerThread for module `mpath` with entry point `ep`. 
 	pub fn with_args<T>(mpath: &str, ep: &str, 
 		refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>,
@@ -696,8 +750,7 @@ impl WorkerThread {
 					
 					// Set ip to next instr, for execution after return
 					cur_frame.ip = slvw.offset();
-
-					let is_tc = _check_tailcall(&mut slvw, cur_frame.rslot);
+					let is_tc = _check_tailcall(&mut slvw, cur_frame.rslot); // Also check if TCO is possible.
 
 					// Copy/Move arguments
 					let mut param = Vec::<Option<BaseType>>::new();
@@ -707,23 +760,33 @@ impl WorkerThread {
 						param.push(val);
 					}
 
+					// Drop this guard here; along with cur_frame, etc.
+					std::mem::drop(module_pool_vec_read);
+
 					// Read FRef, they are already resolved now.
-					let val = cur_frame.read_register(dreg.r1)?;
-					let (mod_id, func_id, native) = _extract_finfo(val)?;
+					self._common_call(dreg.r1, param, is_tc)?;
 
-					if native {
-						todo!("Haven't implemented native function calls yet! This is unexpected rn.")
-					}
+					continue;
+				},
+				op::FSTCALL => {
+					let qreg = op::QuadrupleRegst::try_from(&mut slvw)?;
+					cur_frame.rslot = if qreg.r2 != 0 {Some(qreg.r2-1)} else {None};
 
-					let new_frame = _make_frame(param, &self.pool, mod_id, func_id)?;
+					// Set ip to next instr, for execution after return.
+					cur_frame.ip = slvw.offset();
+					let is_tc = _check_tailcall(&mut slvw, cur_frame.rslot); // Check if TCO is possible.
+					
+					// Prepare arguments.
+					let param: FResult<Vec<_>> = (qreg.s1..(qreg.s1+qreg.s2)).map(|rid| {
+						let rid = cur_frame.get_reg_id(rid)?;
+						cur_frame._take_register(rid, &mut self.refc)
+					}).collect();
 
-					if !is_tc {
-						self.stack.push(new_frame);	    // Push a new frame in the normal case.
-					} else {
-						let idx = self.stack.len() -1; 
-						let old_frame = std::mem::replace(&mut self.stack[idx], new_frame);	// Replace the top-most frame in case of tail-call,
-						old_frame.release(&mut self.refc)?									// and release the old frame
-					}
+					// Drop this guard here; along with cur_frame, etc.
+					std::mem::drop(module_pool_vec_read);
+
+					// Read FRef, they are already resolved now.
+					self._common_call(qreg.r1, param?, is_tc)?;
 
 					continue;
 				},
