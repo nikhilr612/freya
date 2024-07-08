@@ -5,6 +5,18 @@
 
 use std::io::Read;
 use crate::utils::CharStream;
+use super::{TlError, TlErrorType};
+
+impl TlError {
+
+	pub fn from_ioerr(e: std::io::Error, offset: usize) -> Self {
+		TlError { etype: TlErrorType::IoError, msg: format!("{e}"), offset }
+	}
+
+	fn eof<T>(stream: &CharStream<'_, T>) -> Self where T: Read {
+		TlError { etype: TlErrorType::UnexpectedEOF, msg: "Character stream terminated abruptly.".to_string(), offset: stream.byte_position() }
+	}
+}
 
 /// Enum for all possible token types.
 #[derive(Debug)]
@@ -31,11 +43,11 @@ pub struct Token {
 	/// The token type.
 	ttype: TokenType,
 	/// Start offset.
-	start: usize,
+	pub(super) start: usize,
 	/// End offset.
-	end: usize,
+	pub(super) end: usize,
 	/// The line on which the token occurs.
-	line: usize
+	pub(super) line: usize
 }
 
 macro_rules! atom {
@@ -49,39 +61,6 @@ macro_rules! atom {
 pub enum Sexpr {
 	Atom(Token),
 	List(Vec<Sexpr>)
-}
-
-/// An aggregate enum with error codes for all errors involved in parsing, and code emitting phases.
-#[repr(u8)]
-#[derive(Debug)]
-pub enum TlErrorType {
-	IoError,
-	UnexpectedToken,
-	UnexpectedEOF,
-	InvalidNumeric,
-	InvalidChar
-}
-
-pub struct TlError {
-	etype: TlErrorType,
-	msg: String,
-	offset: usize
-}
-
-impl std::fmt::Display for TlError {
-	fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-		write!(fmt, "TlError [{:?}] (@{}) : {}", self.etype, self.offset, self.msg)
-	}
-}
-
-impl TlError {
-	fn from_ioerr(e: std::io::Error, offset: usize) -> Self {
-		TlError { etype: TlErrorType::IoError, msg: format!("{e}"), offset }
-	}
-
-	fn eof<T>(stream: &CharStream<'_, T>) -> Self where T: Read {
-		TlError { etype: TlErrorType::UnexpectedEOF, msg: "Character stream terminated abruptly.".to_string(), offset: stream.byte_position() }
-	}
 }
 
 const TOKEN_DELIMS: &str = ")(][ \t\n;";

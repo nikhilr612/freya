@@ -1,5 +1,5 @@
-use std::io::{Write, BufWriter, Read};
-use std::fs::File;
+use std::io::{Write, Read};
+use std::io::Result as IoResult;
 use crate::core::{FatalErr, ErrorType, new_error};
 
 pub(crate) struct SliceView<'a> {
@@ -65,34 +65,32 @@ impl SliceView<'_> {
 	}
 }
 
-pub type IOResult = Result<(), std::io::Error>;
-
 pub trait OutBuf {
-	fn write_u8(&mut self, v: u8) -> IOResult;
-	fn write_u16(&mut self, v: u16) -> IOResult;
-	fn write_u32(&mut self, v: u32) -> IOResult;
-	fn write_u64(&mut self, v: u64) -> IOResult;
-	fn write_str(&mut self, v: &str) -> IOResult;
+	fn write_u8(&mut self, v: u8) -> IoResult<()>;
+	fn write_u16(&mut self, v: u16) -> IoResult<()>;
+	fn write_u32(&mut self, v: u32) -> IoResult<()>;
+	fn write_u64(&mut self, v: u64) -> IoResult<()>;
+	fn write_str(&mut self, v: &str) -> IoResult<()>;
 }
 
 pub trait AsBytes {
-	fn write(&self, buf: &mut impl OutBuf) -> IOResult;
+	fn write(&self, buf: &mut impl OutBuf) -> IoResult<()>;
 }
 
-impl OutBuf for BufWriter<File> {
-	fn write_u8(&mut self, v: u8) -> IOResult {
+impl<T: Write> OutBuf for T {
+	fn write_u8(&mut self, v: u8) -> IoResult<()> {
 		let buf = vec![v; 1];
 		self.write_all(&buf)
 	}
 
-	fn write_u16(&mut self, v: u16) -> IOResult {
+	fn write_u16(&mut self, v: u16) -> IoResult<()> {
 		let mut buf = vec![0; 2];
 		buf[0] = ((v & 0xff00) >> 8) as u8;
 		buf[1] = (v & 0x00ff) as u8;
 		self.write_all(&buf)
 	}
 
-	fn write_u32(&mut self, v: u32) -> IOResult {
+	fn write_u32(&mut self, v: u32) -> IoResult<()> {
 		let mut buf = vec![0; 4];
 		buf[3] = (v & 0xff) as u8;
 		buf[2] = ((v >> 8) & 0xff) as u8;
@@ -101,7 +99,7 @@ impl OutBuf for BufWriter<File> {
 		self.write_all(&buf)	
 	}
 
-	fn write_u64(&mut self, v: u64) -> IOResult {
+	fn write_u64(&mut self, v: u64) -> IoResult<()> {
 		let mut buf = vec![0; 8];
 		buf[7] = (v & 0xff) as u8;
 		buf[6] = ((v >> 8) & 0xff) as u8;
@@ -114,7 +112,7 @@ impl OutBuf for BufWriter<File> {
 		self.write_all(&buf)
 	}
 
-	fn write_str(&mut self, v: &str) -> IOResult {
+	fn write_str(&mut self, v: &str) -> IoResult<()> {
 		self.write_all(v.as_bytes())
 	}
 }
@@ -164,8 +162,6 @@ impl core::fmt::Display for BitSet {
 		write!(fmt, "}}")
 	}
 }
-
-use std::io::Result as IoResult;
 
 const BYTEBUF_SIZE: usize = 2048;
 
