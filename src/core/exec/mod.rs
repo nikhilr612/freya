@@ -2,411 +2,21 @@ use std::io::BufRead;
 use std::str::FromStr;
 use core::time::Duration;
 use std::sync::{Arc, RwLock};
-use std::collections::{HashMap, hash_map::Entry};
-use core::concat;
 
 use crate::core::module::{ModulePool, ResolutionStatus, PoolWriteGuard};
-use crate::core::types::{self, BaseType, FatalErr, ErrorType, new_error};
+use crate::core::types::{self, BaseType, ErrorType, new_error};
 use crate::core::{op, FResult};
 use crate::args::RefPolicy;
 use crate::native::InterfacePool;
 
-#[derive(Debug)]
-struct CallFrame {
-	/// Id of the module containing currently executing section.
-	module_id: usize,
-	/// Id of the function for debugging purposes.
-	function_id: usize,
-	/// Line number updated whenever LINENUMBER instruction is encountered.
-	debug_lnum: u32,
-	/// Vector of base types; indices simulate registers.
-	regs: Vec<Option<BaseType>>,
-	/// The register to write the return value into.
-	rslot: Option<u8>,
-	/// Address of instruction in the code region of module.
-	ip: usize
-}
+mod frame;
+mod rc;
 
-impl CallFrame {
-	fn from_fdecl(mp: &ModulePool, mpath: &str, ep: &str) -> (CallFrame, usize) {
-		let mid = mp.id_by_name(mpath).unwrap_or_else(|e| panic!("Could not create CallFrame\n\tcause: {e}"));
-		let mvec = mp.read_lock();	
-		let m = &mvec[mid];
-		let fnid = m.func_id(ep).unwrap_or_else(|e| panic!("Could not create CallFrame\n\tcause: {e}"));
-		let fdc = m.fdecl_by_id(fnid);
-		let n = fdc.nparam.into();
-		let mut rvec = Vec::new();
-		let ip = fdc.offset as usize;
-		for _i in 0..fdc.nregs {
-			rvec.push(None);
-		}
-		(CallFrame {
-			module_id: mid,
-			regs: rvec,
-			rslot: None,
-			function_id: fnid,
-			debug_lnum: 0,
-			ip
-		}, n)
-	}
+use frame::CallFrame;
+pub use rc::RefCounter;
 
-	fn from_fnid(mp: &ModulePool, mid: usize, fid: usize) -> (CallFrame, usize) {
-		let mvec = mp.read_lock();
-		let m = &mvec[mid];
-		let fdc = m.fdecl_by_id(fid);
-		let n = fdc.nparam as usize;
-		let mut rvec = Vec::new();
-		let ip = fdc.offset as usize;
-		for _i in 0..fdc.nregs {
-			rvec.push(None);
-		}
-		(CallFrame {
-			module_id: mid,
-			regs: rvec,
-			rslot: None,
-			function_id: fid,
-			debug_lnum: 0,
-			ip
-		}, n)
-	}
-
-	#[deprecated(
-		since = "0.2.6",
-		note = "Usage of this function is generally bad design in 'look before you leap' context."
-	)]
-	fn get_reg_id(&self, r: u8) -> FResult<usize> {
-		let r = r as usize;
-		if r >= self.regs.len() {
-			return Err(new_error(ErrorType::InvalidRegister, format!("Invalid register id {r}, max allocated {}", self.regs.len())));
-		}
-		Ok(r)
-	}
-
-	/// 'Read' register `r`.
-	/// Returns an immutable reference to the value stored at index `r.
-	/// Returns `Err` if register id `r` is invalid, or register is empty.
-	fn read_register(&self, r: u8) -> FResult<&BaseType> {
-		self.regs.get(r as usize)
-		.ok_or_else(|| {
-			new_error(ErrorType::InvalidRegister, 
-				format!("Invalid register id {r}, max allocated {}",self.regs.len()))
-		})?
-		.as_ref()
-		.ok_or_else(|| {
-			new_error(ErrorType::EmptyRegister,
-				format!("Register {r} is empty; expecting value."))
-		})
-	}
-
-	/// 'Read' register `r` mutably.
-	/// Returns `Err` if register id `r` is invalid, or register is empty.
-	fn read_mutregst(&mut self, r: u8) -> FResult<&mut BaseType> {
-		let n = self.regs.len();
-		self.regs.get_mut(r as usize)
-		.ok_or_else(|| {
-			new_error(ErrorType::InvalidRegister, 
-				format!("Invalid register id {r}, max allocated {n}"))
-		})?
-		.as_mut()
-		.ok_or_else(|| {
-			new_error(ErrorType::EmptyRegister,
-				format!("Register {r} is empty; expecting value."))	
-		})
-	}
-
-	fn _write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
-		if let Some(btype) = self.regs[rid].take() {
-			Self::cleanup_value(btype, rc)?;
-		}
-		self.regs[rid] = val;
-		Ok(())
-	}
-
-	/// 'Write' value `val` into register `r`, dropping ('cleaning up') the previous value.
-	/// Performs any necessary reference decrements required.
-	fn write_register(&mut self, r: u8, val: BaseType, rc: &mut RefCounter) -> FResult<()> {
-		self.drop_register(r, rc)?;
-		self.regs[r as usize].replace(val);
-		Ok(())
-	}
-
-	/// 'Drop' value in register `r`. Does nothing if the register was empty.
-	/// Performs any necessary reference decrements required.
-	/// Returns `Err` if register `r` is invalid.
-	fn drop_register(&mut self, r: u8, rc: &mut RefCounter) -> FResult<()> {
-		let n = self.regs.len();
-		let v  = self.regs.get_mut(r as usize)
-			.ok_or_else(|| {
-				new_error(ErrorType::InvalidRegister, 
-					format!("Invalid register id {r}, max allocated {n}"))
-			})?
-			.take();
-
-		if let Some(b) = v {
-			Self::cleanup_value(b, rc)?;
-		}
-
-		Ok(())
-	}
-
-	fn move_register(&mut self, r1: u8, r2: u8, rc: &mut RefCounter) -> FResult<()> {
-		let r1 = self.get_reg_id(r1)?;
-		let v1 = self._take_register(r1, rc)?;
-		let r2 = self.get_reg_id(r2)?;
-		self._write_unchecked(r2, v1, rc)
-	}
-
-	fn _take_register(&mut self, r1: usize, rc: &mut RefCounter) -> FResult<Option<BaseType>> {
-		let btp = &self.regs[r1];
-		if btp.is_none() {
-			return Ok(None);
-		}
-		let btp = btp.as_ref().unwrap();
-		// TOOD: Remove duplicate base type copy code
-		let ret = 
-			match btp {
-				BaseType::Int(v) => {BaseType::Int(*v)},
-				BaseType::Flt(v) => {BaseType::Flt(*v)},
-				BaseType::Chr(v) => {BaseType::Chr(*v)},
-				BaseType::Alloc(a) => {
-					match a.try_copy() {
-						Some(a) => BaseType::Alloc(Box::new(a)),
-						None => self.regs[r1].take().unwrap()
-					}
-				},
-				BaseType::ConstRef(v) => {
-					// ConstRefs are copy on move.
-					rc.incref(*v)?;
-					BaseType::ConstRef(*v)
-				},
-				_ => {
-					// Move mutable refs, OpaqueHandles
-					self.regs[r1].take().unwrap()
-				}
-			}
-		;
-		Ok(Some(ret))
-	}
-
-	fn dealloc_ctype(ctype: types::CompositeType, refc: &mut RefCounter) -> FResult<()> {
-		match ctype {
-			types::CompositeType::FRef { .. }  => {
-				// No alloc here.
-			},
-			types::CompositeType::Str(_s) => {
-				// No sub objects owned.
-			},
-			types::CompositeType::BitSet(_b) => {
-				// No sub objects owned.
-			},
-			types::CompositeType::Slice { parent, ..} => {
-				// Has an immutable reference to parent object. Drop that reference.
-				refc.decref(parent)?;
-			},
-			types::CompositeType::List(v) => {
-				// Cleanup all sub-objects / values
-				for value in v {
-					Self::cleanup_value(value, refc)?
-					// value is dropped.
-				}
-			},
-			types::CompositeType::Range {..} => {
-				// No alloc here.
-			}
-			/*,_ => {
-				unimplemented!()
-			}*/
-		}
-		Ok(())
-	}
-
-	fn cleanup_value(btype: BaseType, rc: &mut RefCounter) -> FResult<()> {
-		match btype {
-			BaseType::ConstRef(r) => rc.decref(r),
-			BaseType::MutRef(r) => rc.decref_mut(r),
-			BaseType::Alloc(bx) => {
-				let c = rc.count_of(bx.as_ref());
-				if c != (0,0) {
-					 Err(types::new_error(ErrorType::PrematureDealloc, 
-					 	format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)))
-				} else { Self::dealloc_ctype(*bx, rc) }
-			}
-			_ => {
-				Ok(())
-			}
-		}
-	}
-
-	fn _take_unchecked(&mut self, r1: u8) -> FResult<Option<BaseType>> {
-		let r1 = self.get_reg_id(r1)?;
-		Ok(self.regs[r1].take())
-	}
-
-	fn release(mut self, rc: &mut RefCounter) -> FResult<()> {
-		// Double-pass, drop all references first, ...
-		for r in self.regs.iter_mut() {
-			let val = match r {
-				None => continue,
-				Some(v) => v
-			};
-			match val {
-				BaseType::ConstRef(ptr) => { rc.decref(*ptr)?; },
-				BaseType::MutRef(ptr) => {rc.decref_mut(*ptr)?;},
-				// Anything else, drop in second pass
-				_ => {continue;}
-			}
-			// Since r had a reference, which has now been dropped, we should skip it in next loop.
-			*r = None;
-		}
-		// ... then drop the remaining regsiters starting from the back.
-		for val in self.regs.into_iter().rev().flatten() {
-			Self::cleanup_value(val, rc)?;
-		}
-		Ok(())
-	}
-}
-
-pub(crate) struct RefCounter {
-	refctr: HashMap<usize, (usize, usize)>,
-	refp: RefPolicy
-}
-
-impl RefCounter {
-	fn new(rp: RefPolicy) -> RefCounter {
-		RefCounter {
-			refctr: HashMap::new(),
-			refp: rp
-		}
-	}
-
-	#[inline(always)]
-	fn error_or_warn(&self, err: FatalErr) -> FResult<()> {
-		if let RefPolicy::WarnOnly = self.refp {
-			eprintln!("WARNING: {}", err.message());
-			Ok(())
-		} else {
-			Err(err)
-		}
-	}
-
-	/// Increment the reference count of immutable references to an object.
-	pub fn incref(&mut self, ptr: *const types::CompositeType) -> FResult<()> {
-		if let RefPolicy::Inactive = self.refp {
-			return Ok(())
-		}
-
-		let addr = ptr as usize;
-		// Use Entry API to avoid double hash computation, at cost of pointer clone
-		if let Entry::Vacant(e) = self.refctr.entry(addr) {
-			e.insert((1, 0));
-		} else {
-			let tup = self.refctr.get_mut(&addr).unwrap();
-			tup.0 += 1;
-			if tup.1 != 0 {
-				let r = unsafe {&*ptr};
-				let err = types::new_error(ErrorType::CoincidentRef, 
-					format!("@{addr:x}:{r}, has an active mutable reference, and hence cannot acquire an immutable reference."));
-				return self.error_or_warn(err);
-			}
-		}
-		Ok(())
-	}
-
-	/// Increment the reference count of mutable references to an object.
-	pub fn incref_mut(&mut self, ptr: *mut types::CompositeType) -> FResult<()> {
-		if let RefPolicy::Inactive = self.refp {
-			return Ok(())
-		}
-
-		let addr = ptr as usize;
-		if let Entry::Vacant(e) = self.refctr.entry(addr) {
-			e.insert((0, 1));
-		} else {
-			let tup = self.refctr.get_mut(&addr).unwrap();
-			let r = unsafe {&*ptr};
-			if tup.0 > 0 {
-				let err = types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{r}, has {} active immutable reference(s), and hence cannot acquire mutable reference.", tup.0));
-				return self.error_or_warn(err);
-			}
-			if tup.1 > 0 {
-				return self.error_or_warn(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{r} already has an active mutable reference.")));
-			}
-			tup.1 = 1;
-		}
-		Ok(())
-	}
-
-	/// Decrement the reference count of immutable references to an object.
-	pub fn decref(&mut self, ptr: *const types::CompositeType) -> FResult<()> {
-		if let RefPolicy::Inactive = self.refp {
-			return Ok(())
-		}
-
-		let addr = ptr as usize;
-		if self.refctr.contains_key(&addr) {
-			let tup = self.refctr.get_mut(&addr).unwrap();
-			if tup.0 > 0 {
-				tup.0 -= 1;
-				return Ok(());
-			} else {
-				return self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
-			}
-		}
-		self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted immutable references.")))
-	}
-
-	/// Decrement the reference count of mutable references to an object.
-	pub fn decref_mut(&mut self, ptr: *mut types::CompositeType) -> FResult<()> {
-		if let RefPolicy::Inactive = self.refp {
-			return Ok(())
-		}
-
-		let addr = ptr as usize;
-		if self.refctr.contains_key(&addr) {
-			let tup = self.refctr.get_mut(&addr).unwrap();
-			if tup.1 > 0 {
-				tup.1 -= 1;
-				return Ok(());
-			} else {
-				return self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")));
-			}
-		}
-		self.error_or_warn(types::new_error(ErrorType::NoRefsToDec, format!("@{addr:x} has no counted mutable references.")))
-	}
-
-	/// Get the number of active immutable and mutable references for a given composite type.
-	fn count_of(&self, addr: *const types::CompositeType) -> (usize, usize) {
-		let addr = addr as usize;
-		if self.refctr.contains_key(&addr) {
-			*self.refctr.get(&addr).unwrap()
-		} else {
-			(0,0)
-		}
-	}
-
-	/// Verify that the value can be borrowed immutably.
-	pub(crate) fn verify_borrow(&self, value: &types::CompositeType) -> FResult<()> {
-		let (_, mcount) = self.count_of(value);
-		let addr = (value as *const types::CompositeType) as usize;
-		if mcount > 0 {
-			return self.error_or_warn(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has an active mutable reference, hence cannot acquire immutable reference.")));
-		}
-		Ok(())
-	}
-
-	/// Verify that the value can be borrowed mutably.
-	pub(crate) fn verify_borrow_mut(&self, value: &mut types::CompositeType) -> FResult<()> {
-		let (icount, mcount) = self.count_of(value);
-		let addr = (value as *const types::CompositeType) as usize;
-		if icount > 0 {
-			return self.error_or_warn(types::new_error(ErrorType::CoincidentRef, format!("@{addr:x}:{value} has active immutable reference(s), hence cannot acquire mutable reference.")));
-		} else if mcount > 0 {
-			return self.error_or_warn(types::new_error(ErrorType::MutableAliasing, format!("@{addr:x}:{value} already has an active mutable reference")));
-		}
-		Ok(())
-	}
-}
-
+/// A VM thread/worker which fetch-decode-executes instructions from an entry point function, whose frame is first pushed onto stack.
+/// Note that this does not actually correspond to an OS-level thread.
 pub struct WorkerThread {
 	/// Reference counter to keep track of number of active references during execution.
 	refc: RefCounter,
@@ -417,6 +27,78 @@ pub struct WorkerThread {
 	/// Pool is locked when a module is being loaded.
 	pool: Arc<ModulePool>,
 	nifp: Arc<RwLock<InterfacePool>>
+}
+
+impl WorkerThread {
+	/// Create a new WorkerThread for module `mpath` with entry point `ep`.
+	#[allow(dead_code)]
+	pub fn new(mpath: &str, ep: &str, refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>) -> WorkerThread {
+		let (cf, _) = CallFrame::from_fdecl(&mp, mpath, ep);
+		let stack = vec![cf]; // Load main onto stack.
+		WorkerThread {
+			refc: RefCounter::new(refp),
+			stack,
+			pool: mp,
+			nifp
+		}
+	}
+
+	/// Call a resolved callable in register `callr` with parameters `param` (possible in tail call manner if `is_tc`)
+	fn _common_call(&mut self, callr: u8, param: Vec<Option<BaseType>>, is_tc: bool) -> FResult<()> {
+		let val = self.stack.last().expect("Ultimate cockup. Common call initiated with empty stack").read_register(callr)?;
+		let (mod_id, func_id, native) = _extract_finfo(val)?;
+
+		if native {
+			todo!("Implement native function calls.")
+		}
+
+		let new_frame = _make_frame(param, &self.pool, mod_id, func_id)?;
+
+		if is_tc {
+			let idx = self.stack.len() -1; 
+			let old_frame = std::mem::replace(&mut self.stack[idx], new_frame);	// Replace the top-most frame in case of tail-call,
+			old_frame.release(&mut self.refc)?									// and release the old frame
+		} else {
+			self.stack.push(new_frame);	    									// Push a new frame in the normal case.
+		}
+
+		Ok(())
+	}
+
+	/// Create a new WorkerThread for module `mpath` with entry point `ep`. 
+	pub fn with_args<T>(mpath: &str, ep: &str, 
+		refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>,
+		args: T
+	) -> WorkerThread
+	where T: Iterator<Item = BaseType> {
+		let (mut cf, n) = CallFrame::from_fdecl(&mp, mpath, ep);
+		for (i, a) in args.take(n).enumerate() {
+			cf.regs[i].replace(a);
+		}
+		let stack = vec![cf]; // Load main onto stack.
+		WorkerThread {
+			refc: RefCounter::new(refp),
+			stack,
+			pool: mp,
+			nifp
+		}
+	}
+
+	pub fn print_stack_trace(&self) {
+		eprintln!("Trace back (most recent call last)");
+		let mvec = self.pool.read_lock();
+		for frame in &self.stack {
+			let fmod = &mvec[frame.module_id];
+			let fname = fmod.name_by_id(frame.function_id()).unwrap();
+			let mname = &fmod.name;
+			let debug_lnum = frame.lineno();
+			if debug_lnum != 0 {
+				eprintln!("\t@{fname}\t[{}:{:#06x}], {mname}", debug_lnum, frame.ip);
+			} else {
+				eprintln!("\t@{fname}\t[{:#06x}], {mname}", frame.ip)
+			}
+		}
+	}
 }
 
 fn resolve_extern(pool: &ModulePool, mut mvec: PoolWriteGuard, ext_ids: (usize, usize)) -> FResult<(usize, usize, bool)> {
@@ -458,6 +140,7 @@ fn resolve_extern(pool: &ModulePool, mut mvec: PoolWriteGuard, ext_ids: (usize, 
 /// A call is deemed a 'tail-call' if:
 /// -    it is immediately followed by a `VRET` (in all cases)
 /// -    it is immediately followed by a `return <current return register>` (if call doesn't discard return value)
+// TODO: Recheck Tail-call implementation.
 fn _check_tailcall(slvw: &mut crate::utils::SliceView, rslot: Option<u8>) -> bool {
 	let nextinstr = slvw.get_u8();
 	if nextinstr == op::VRET {
@@ -534,75 +217,6 @@ macro_rules! instr_2arg {
 }
 
 impl WorkerThread {
-	/// Create a new WorkerThread for module `mpath` with entry point `ep`.
-	#[allow(dead_code)]
-	pub fn new(mpath: &str, ep: &str, refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>) -> WorkerThread {
-		let (cf, _) = CallFrame::from_fdecl(&mp, mpath, ep);
-		let stack = vec![cf]; // Load main onto stack.
-		WorkerThread {
-			refc: RefCounter::new(refp),
-			stack,
-			pool: mp,
-			nifp
-		}
-	}
-
-	/// Call a resolved callable in register `callr` with parameters `param` (possible in tail call manner if `is_tc`)
-	fn _common_call(&mut self, callr: u8, param: Vec<Option<BaseType>>, is_tc: bool) -> FResult<()> {
-		let val = self.stack.last().expect("Ultimate cockup. Common call initiated with empty stack").read_register(callr)?;
-		let (mod_id, func_id, native) = _extract_finfo(val)?;
-
-		if native {
-			todo!("Implement native function calls.")
-		}
-
-		let new_frame = _make_frame(param, &self.pool, mod_id, func_id)?;
-
-		if is_tc {
-			let idx = self.stack.len() -1; 
-			let old_frame = std::mem::replace(&mut self.stack[idx], new_frame);	// Replace the top-most frame in case of tail-call,
-			old_frame.release(&mut self.refc)?									// and release the old frame
-		} else {
-			self.stack.push(new_frame);	    									// Push a new frame in the normal case.
-		}
-
-		Ok(())
-	}
-
-	/// Create a new WorkerThread for module `mpath` with entry point `ep`. 
-	pub fn with_args<T>(mpath: &str, ep: &str, 
-		refp: RefPolicy, mp: Arc<ModulePool>, nifp: Arc<RwLock<InterfacePool>>,
-		args: T
-	) -> WorkerThread
-	where T: Iterator<Item = BaseType> {
-		let (mut cf, n) = CallFrame::from_fdecl(&mp, mpath, ep);
-		for (i, a) in args.take(n).enumerate() {
-			cf.regs[i].replace(a);
-		}
-		let stack = vec![cf]; // Load main onto stack.
-		WorkerThread {
-			refc: RefCounter::new(refp),
-			stack,
-			pool: mp,
-			nifp
-		}
-	}
-
-	pub fn print_stack_trace(&self) {
-		eprintln!("Trace back (most recent call last)");
-		let mvec = self.pool.read_lock();
-		for frame in &self.stack {
-			let fmod = &mvec[frame.module_id];
-			let fname = fmod.name_by_id(frame.function_id).unwrap();
-			let mname = &fmod.name;
-			if frame.debug_lnum != 0 {
-				eprintln!("\t@{fname}\t[{}:{:#06x}], {mname}", frame.debug_lnum, frame.ip);
-			} else {
-				eprintln!("\t@{fname}\t[{:#06x}], {mname}", frame.ip)
-			}
-		}
-	}
-
 	/// Begin execution.
 	pub fn begin(&mut self) -> FResult<()> {
 		while !self.stack.is_empty() {
@@ -624,7 +238,7 @@ impl WorkerThread {
 					if !self.stack.is_empty() {	
 						let cur_frame = &mut self.stack[stack_top-1];
 						if let Some(ret_reg) = cur_frame.rslot {
-							let val = frame._take_unchecked(r1)?;
+							let val = frame.take_register(r1, &mut self.refc)?;
 							let ret_reg = ret_reg as usize;
 							cur_frame._write_unchecked(ret_reg, val, &mut self.refc)?;
 							cur_frame.rslot = None;
@@ -701,7 +315,7 @@ impl WorkerThread {
 				},
 				op::MOV => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					cur_frame.move_register(dreg.r1, dreg.r2, &mut self.refc)?;
+					cur_frame.tmove_register(dreg.r1, dreg.r2, &mut self.refc)?;
 				},
 				op::DROP => {
 					let r1 = slvw.get_u8();
@@ -753,18 +367,15 @@ impl WorkerThread {
 					let is_tc = _check_tailcall(&mut slvw, cur_frame.rslot); // Also check if TCO is possible.
 
 					// Copy/Move arguments
-					let mut param = Vec::<Option<BaseType>>::new();
-					for reg in rparam.regs {
-						let rid = cur_frame.get_reg_id(reg)?;
-						let val = cur_frame._take_register(rid, &mut self.refc)?;
-						param.push(val);
-					}
+					let param: FResult<Vec<_>> = rparam.regs.into_iter().map(|r| {
+						cur_frame.take_register(r, &mut self.refc)
+					}).collect();
 
 					// Drop this guard here; along with cur_frame, etc.
 					std::mem::drop(module_pool_vec_read);
 
 					// Read FRef, they are already resolved now.
-					self._common_call(dreg.r1, param, is_tc)?;
+					self._common_call(dreg.r1, param?, is_tc)?;
 
 					continue;
 				},
@@ -778,8 +389,7 @@ impl WorkerThread {
 					
 					// Prepare arguments.
 					let param: FResult<Vec<_>> = (qreg.s1..(qreg.s1+qreg.s2)).map(|rid| {
-						let rid = cur_frame.get_reg_id(rid)?;
-						cur_frame._take_register(rid, &mut self.refc)
+						cur_frame.take_register(rid, &mut self.refc)
 					}).collect();
 
 					// Drop this guard here; along with cur_frame, etc.
@@ -817,7 +427,7 @@ impl WorkerThread {
 				op::NOP => {},
 				op::DBGLN => {
 					let line_number = slvw.get_u32();
-					cur_frame.debug_lnum = line_number;
+					cur_frame.set_lineno(line_number);
 				},
 				op::ASSERT => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
@@ -858,8 +468,9 @@ impl WorkerThread {
 				}
 				op::PUSH => {
 					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
-					let r2 = cur_frame.get_reg_id(dreg.r2)?;
-					let pval = cur_frame._take_register(r2, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Cannot push value from empty register {r2}")))?;
+					let pval = cur_frame.take_register(dreg.r2, &mut self.refc)?
+						.ok_or(new_error(ErrorType::EmptyRegister,
+							format!("Cannot push value from empty register {}", dreg.r2)))?;
 					let rval = cur_frame.read_mutregst(dreg.r1)?;
 					types::as_composite_type_mut(rval, &self.refc)?.push(pval)?;
 				},
@@ -895,13 +506,13 @@ impl WorkerThread {
 				},
 				op::PUTINDEX => {
 					let treg = op::TripleRegst::try_from(&mut slvw)?;
-					let r3 = cur_frame.get_reg_id(treg.r3)?;
-					let r2 = cur_frame.get_reg_id(treg.r2)?;
-					let rval = cur_frame._take_register(r3, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
-					let idxv = cur_frame._take_register(r2, &mut self.refc)?.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {r3} is empty")))?;
+					let rval = cur_frame.take_register(treg.r3, &mut self.refc)?
+							.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {} is empty", treg.r3)))?;
+					let idxv = cur_frame.take_register(treg.r2, &mut self.refc)?
+							.ok_or(new_error(ErrorType::EmptyRegister, format!("Register {} is empty", treg.r2)))?;
 					let ctyp = cur_frame.read_mutregst(treg.r1)?;
-					cur_frame.regs[r3] = types::try_putindex(ctyp, &idxv, rval, &self.refc)?;	// regs[r3] is None, so no need to write, or drop check
-					cur_frame.regs[r2] = Some(idxv);							  				// Move the index back.
+					cur_frame.regs[treg.r3 as usize] = types::try_putindex(ctyp, &idxv, rval, &self.refc)?;	// regs[r3] is None, so no need to write, or drop check.
+					cur_frame.regs[treg.r2 as usize] = Some(idxv);							  				// Move the index back.
 				},
 				op::NEWLIST => {
 					let reg = slvw.get_u8();
