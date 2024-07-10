@@ -187,12 +187,12 @@ fn main() -> ExitCode {
             let ast = match emit::parse(&mut reader) {
                 Ok(a) => a,
                 Err(e) => {
-                    error!("{}", e);
+                    error!("{:?}", e);
                     error!("Parsing failed.");
                     return ExitCode::FAILURE;
                 }
             };
-            println!("AST:\n{ast:#?}");
+            println!("AST:\n{ast:?}");
         }
     }
     ExitCode::SUCCESS
