@@ -178,9 +178,9 @@ fn match_parse_literal (ch: char, buf: String, loc: TextualLocation) -> Result<S
 		atom!(Boolean(false), loc)
 
 	// ----------------------------------------------------- //
-	// If lead character is alphabetic or '_', then token is a symbol.
+	// If lead character is alphabetic, '_' or ':', then token is a symbol.
 
-	} else if ch.is_alphabetic() || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
+	} else if ch.is_alphabetic() || ch == ':' || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
 		atom!(Symbol(buf), loc) // Symbol
 	
 	// ----------------------------------------------------- //

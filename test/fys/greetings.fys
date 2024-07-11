@@ -1,3 +1,5 @@
+(require "test/mathutils" m :module)
+(require "freya_std/io" std:io :native)
 (define APERY 1.2020569) ; floating-point (double)
 ; This is a test file. Let's check out some of the literals available.
 (define Release #f)						; boolean
@@ -7,10 +9,12 @@
 ; nop can be used to write comments, but since single-line comments like these are possible..
 (define (other-fn )
 	(nop 
+		; Just using this block to checkout how syntax looks.
 		"This is some random stuff.. I doubt anyone cares"
 		"いろんなものを追加できます、ふふふ。"
 		"ನಾನು ಎಲ್ಲಾ ರೀತಿಯ ವಿಷಯಗಳನ್ನು ಬರೆಯಬಲ್ಲೆ.."
 		(print nil)
+		(std:io:sqrt 2.4)
 	)
 ) ; they're rather unnecessary.
 (define A-MISTAKE' 123)	; integer, decimal literal

@@ -1,11 +1,12 @@
 //! Module to traverse parsed S-expressions (AST) and generate VM modules.
 //! Walkers in this module emit equivalent bytecode.
 
+use log::debug;
 use std::{collections::HashMap, fs::File};
 use crate::core::module::{ExternDecl, FuncDecl};
 use super::{Sexpr, SexprKind, TextualLocation, TlError, TlErrorType, Token};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum SymbolType {
 	NamedValue { register: u8 },
 	NamedConstant { pool_index: u16 },
@@ -14,7 +15,7 @@ enum SymbolType {
 	ExternalFunction { index: u16 }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// Stores all name bindings.
 struct Scope<'a> {
 	/// Parent scope.
@@ -41,8 +42,8 @@ impl Scope<'_> {
 
 	/// Bind a symbol `name` to `stype` found at `offset`.
 	/// Returns `Err` if `name` was already bound.
-	fn bind(&mut self, name: &str, stype: SymbolType) -> Result<(), SymbolType> {
-		not_ok(self.bindings.insert(name.to_owned(), stype))
+	fn bind(&mut self, name: impl Into<String>, stype: SymbolType) -> Result<(), SymbolType> {
+		not_ok(self.bindings.insert(name.into(), stype))
 	}
 
 	/// Search for `name` within current scope, and all parent scopes. 
@@ -59,6 +60,7 @@ impl Scope<'_> {
 	}
 }
 
+#[derive(Debug)]
 pub struct CompileUnit {
 	functions: Vec<FuncDecl>,
 	externfns: Vec<ExternDecl>,
@@ -117,25 +119,45 @@ fn visit_define_form<'a>(mut it: impl Iterator<Item = &'a Sexpr>, cu: &mut Compi
 		SexprKind::Atom(Token::Symbol(s)) => {
 			let tok = visit_constant(it, loc)
 				.map_err(|e| e.aug("Looking for literal atom as body for constant-type `define` form."))?;
-			let mut id = cu.constants.len();
-			if cu.constants.contains_key(&tok) {
-				id = *cu.constants.get(&tok).unwrap();
-			} else {
-				cu.constants.insert(tok, id);
-			}
-			sc.bind(&s, SymbolType::NamedConstant { pool_index: id as u16 });
-			todo!("Constant-type define form.")
+			let id = {
+				let new_id = cu.constants.len();
+				*cu.constants.entry(tok).or_insert(new_id)
+			};
+			sc.bind(s, SymbolType::NamedConstant { pool_index: id as u16 })
+			.map_err(|_| TlError {
+				etype: TlErrorType::ReboundName,
+				msg: format!("Constant-type define form symbol `{s}` was already bound."),
+				loc: a.loc,
+		    })
 		},
-		SexprKind::List(_v) => {
-			todo!("Function-type define form.")
+		SexprKind::List(v) => {
+			let name = v.first().ok_or_else(|| TlError {
+				etype: TlErrorType::ExpectingAtom,
+				msg: "Expecting list of symbols for name and parameters, found empty list.".to_owned(),
+				loc: a.loc
+			})?
+			.inspect_symbol()
+			.map_err(|e| e.aug("Looking for function name symbol in function-type `define` form."))?;
+			let nparam = (v.len() -1) as u8;
+			let fdc = FuncDecl {
+			    nparam,
+			    nregs: 0,
+			    offset: 0,
+			};
+			let index = cu.functions.len() as u16;
+			cu.functions.push(fdc);
+			sc.bind(name, SymbolType::InternalFunction { index })
+			.map_err(|_| TlError {
+				etype: TlErrorType::ReboundName,
+				msg: format!("Function-type define form symbol `{name}` was already bound."),
+				loc: a.loc,
+		    })
 		},
-		_ => {
-			return Err(TlError {
+		_ => Err(TlError {
 				etype: TlErrorType::IllegalAtom,
 				msg: "Expecting either symbol or list as `define` form head.".to_owned(),
 				loc: a.loc 
-			});
-		}
+			})
 	}
 }
 
@@ -161,8 +183,21 @@ fn visit_require_form<'a>(mut it: impl Iterator<Item = &'a Sexpr>, cu: &mut Comp
 
 	let is_native = match it.next() {
 		None => false,
-		Some(a) =>
-			a.inspect_symbol().map_err(|e| e.aug("Looking for indicator symbol `:native` in require form."))? == ":native"
+		Some(a) => {
+			let s = a.inspect_symbol().map_err(|e| e.aug("Looking for indicator symbol in require form."))?;
+			match s {
+				":rawstr" => todo!("Implement including files as raw strings in constant pool."),
+				":native" => true,
+				":module" => false,
+				_ => {
+					return Err(TlError {
+				        etype: TlErrorType::IllegalAtom,
+				        msg: "The only valid indicator symbols in `require` form are `:native`, `:rawstr`, and `:module`".to_owned(),
+				        loc: a.loc,
+				    })
+				}
+			}
+		}
 	};
 
 	not_ok(cu.xusenames.insert(name.to_string(), (path.to_string(), is_native)))
@@ -211,6 +246,6 @@ pub fn walk(ast: Sexpr) -> Result<CompileUnit, TlError> {
 		"Failed to visit root-level lists.")?;
 
 	// TODO: Walk each define.
-
+	debug!("Gloal scope: {global_scope:#?}");
 	Ok(compile_unit)
 }

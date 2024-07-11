@@ -1,6 +1,5 @@
 mod asm;
 
-use core::hash;
 use std::ops::Range;
 use crate::utils::CharStream;
 
@@ -49,7 +48,7 @@ impl From<&TextualLocation> for Range<usize> {
 /// Enum for all possible token types.
 /// Actual token read from input.
 #[derive(Debug, Clone)]
-pub enum Token {
+enum Token {
 	/// Integer literal.
 	Integer(i64),
 	/// Boolean literal.
@@ -259,14 +258,14 @@ impl Sexpr {
 				Err(TlError {
 					etype: TlErrorType::IllegalAtom,
 					msg: format!("Expecting Symbol, found {t}."), 
-					loc: self.loc.clone()
+					loc: self.loc
 				})
 			},
 			SexprKind::List(_) => {
 				Err(TlError {
 					etype: TlErrorType::ExpectingList,
 					msg: "Expecting Symbol, found list.".to_owned(), 
-					loc: self.loc.clone()
+					loc: self.loc
 				})
 			}
 		}
@@ -282,14 +281,14 @@ impl Sexpr {
 				Err(TlError {
 					etype: TlErrorType::IllegalAtom,
 					msg: format!("Expecting string, found {t}."), 
-					loc: self.loc.clone()
+					loc: self.loc
 				})
 			},
 			SexprKind::List(_) => {
 				Err(TlError {
 					etype: TlErrorType::ExpectingAtom,
 					msg: "Expecting string, found list.".to_string(), 
-					loc: self.loc.clone()
+					loc: self.loc
 				})
 			}
 		}
@@ -377,10 +376,16 @@ impl TlError {
 
 impl std::fmt::Debug for TlError {
 	fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-		if matches!(self.etype, TlErrorType::IoError) {
-			write!(fmt, "TlError [{:?}], {:?}\n\tdetail: {}", self.etype, self.loc, self.msg)
-		} else {
-			write!(fmt, "TlError [{:?}]: {} {:?}", self.etype, self.msg, self.loc)
+		match &self.etype {
+			TlErrorType::IoError => write!(fmt, "TlError [{:?}], {:?}\n\tdetail: {}", self.etype, self.loc, self.msg),
+			TlErrorType::Complex(v) if fmt.alternate() => {
+				writeln!(fmt, "TlError [Complex]: {}, {:?}", self.msg, self.loc)?;
+				for i in v.iter() {
+					writeln!(fmt, "|-----> {i:#?}")?;
+				}
+				Ok(())
+			},
+			_ => write!(fmt, "TlError [{:?}]: {} {:?}", self.etype, self.msg, self.loc)
 		}
 	}
 }
@@ -390,3 +395,4 @@ mod walker;
 
 pub use asm::asm;
 pub use parser::parse;
+pub use walker::walk;

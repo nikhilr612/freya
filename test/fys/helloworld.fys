@@ -1,0 +1,6 @@
+; A simple program to print "Hello World!"
+; `main` is the entry point.
+(define (main)
+	; Print the string literal to stdout.
+	(print "Hello World!")
+)

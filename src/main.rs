@@ -192,7 +192,18 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            println!("AST:\n{ast:?}");
+            debug!("AST:\n{ast:#?}");
+            trace!("Walking AST..");
+            match emit::walk(ast) {
+                Err(e) => {
+                    error!("Failed to walk AST.");
+                    eprintln!("{e:#?}");
+                    return ExitCode::FAILURE;
+                },
+                Ok(cu) => {
+                    debug!("CU:\n{cu:#?}");
+                }
+            }
         }
     }
     ExitCode::SUCCESS
