@@ -1,5 +1,3 @@
-(require "test/mathutils" m :module)
-(require "freya_std/io" std:io :native)
 (define APERY 1.2020569) ; floating-point (double)
 ; This is a test file. Let's check out some of the literals available.
 (define Release #f)						; boolean
@@ -18,3 +16,5 @@
 	)
 ) ; they're rather unnecessary.
 (define A-MISTAKE' 123)	; integer, decimal literal
+; let's make some lame functions, just for fun
+(define (always-one _ _ _) None) ; this is fine.

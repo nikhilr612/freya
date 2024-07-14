@@ -321,6 +321,12 @@ impl WorkerThread {
 					let r1 = slvw.get_u8();
 					cur_frame.drop_register(r1, &mut self.refc)?;
 				},
+				op::DEL => {
+					let dreg = op::DoubleRegst::try_from(&mut slvw)?;
+					for r in dreg.r1..=dreg.r2 {
+						cur_frame.drop_register(r, &mut self.refc)?;
+					}
+				},
 				op::LDF => {
 					let param = op::Id16Reg::try_from(&mut slvw)?;
 					let val = types::CompositeType::new_fref(cur_frame.module_id, param.id as usize, false);

@@ -60,7 +60,7 @@ pub struct ExternDecl {
 }
 
 impl ExternDecl {
-	fn new_extern(mpath: &str, fn_name: &str, native: bool) -> ExternDecl {
+	pub fn new_extern(mpath: &str, fn_name: &str, native: bool) -> ExternDecl {
 		ExternDecl {
 			module_path: mpath.to_owned(),
 			func_name: fn_name.to_owned(),

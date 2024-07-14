@@ -1,12 +1,12 @@
-/// Module to contain all opcode and instruction definitions.
-///
-/// 1. Function-call related instructions: 0x1_
-/// 2. Register load, move, copy related instructions: 0x2_
-/// 3. Miscellaneous procedures: 0xf_
-/// 4. Arithmetic instructions: 0x3_
-/// 5. Relational operators, conditional branching related instructions: 0x4_
-/// 6. Debug related instructions: 0x5_
-/// 7. String, list related instructions: 0x6_
+//! Module to contain all opcode and instruction definitions.
+//!
+//! 1. Function-call related instructions: 0x1_
+//! 2. Register load, move, copy related instructions: 0x2_
+//! 3. Miscellaneous procedures: 0xf_
+//! 4. Arithmetic instructions: 0x3_
+//! 5. Relational operators, conditional branching related instructions: 0x4_
+//! 6. Debug related instructions: 0x5_
+//! 7. String, list related instructions: 0x6_
 
 use crate::utils::{AsBytes, OutBuf, SliceView};
 use super::{FatalErr, ErrorType, types};
@@ -54,95 +54,110 @@ pub const RET: u8 = 0x10;
 /// Return 
 pub const VRET: u8 = 0x1f;
 /// Load from Constant Pool
-/// r1 <- [u16]
+///
+/// `r1 <- [u16]`
 pub const LDC: u8 = 0x20;
 /// Move value from one register to another
-/// r2 <- r1
+///
+/// `r2 <- r1`
 /// If value in r1, is not copy, then r1 <- None.
 /// If r1 is None, then this is equivalent to dropping r2.
 pub const MOV: u8 = 0x21;
 /// Swap values in register
-/// t <- r1, r1 <- r2, r2 <- t
+///
+/// `t <- r1, r1 <- r2, r2 <- t`
 pub const SWAP: u8 = 0x22;
-/// Drop value in register. If the value is an Alloc, the underlying object will be deallocated.`
+/// Drop value in register. If the value is an Alloc, the underlying object will be deallocated.
 pub const DROP: u8 = 0x23;
 /// Borrow composite type immutably.
-/// r2 <- &[r1]
+///
+/// `r2 <- &[r1]`
 pub const BWI: u8 = 0x24;
 /// Borow composite type mutably.
-/// r2 <- &mut[r1]
+///
+/// `r2 <- &mut[r1]`
 pub const BWM: u8 = 0x25;
 /// Load an integer into a register
-/// r1 <- (i8)
+///
+/// `r1 <- (i8)`
 pub const LDI: u8 = 0x26;
+/// Drop registers in sequence.
+///
+/// `r[u1]..=r[u2]`
+pub const DEL: u8 = 0x27;
 
-/// If r1 < r2, then r3 <- 1 else r3 <- 0
+/// If `r1 < r2`, then `r3 <- 1` else `r3 <- 0`
 pub const RLT: u8 = 0x41;
-/// If r1 <= r2, then r3 <- 1 else r3 <- 0
+/// If `r1 <= r2`, then `r3 <- 1` else `r3 <- 0`
 pub const RLE: u8 = 0x42;
-/// If r1 > r2, then r3 <- 1 else r3 <- 0
+/// If `r1 > r2`, then `r3 <- 1` else `r3 <- 0`
 pub const RGT: u8 = 0x43;
-/// If r1 >= r2, then r3 <- 1 else r3 <- 0
+/// If `r1 >= r2`, then `r3 <- 1` else `r3 <- 0`
 pub const RGE: u8 = 0x44;
-/// If r1 != r2, then r3 <- 1 else r3 <- 0
+/// If `r1 != r2`, then `r3 <- 1` else `r3 <- 0`
 pub const RNEQ: u8 = 0x45;
-/// If r1 == r2, then r3 <- 1 else r3 <- 0
+/// If `r1 == r2`, then `r3 <- 1` else `r3 <- 0`
 pub const REQ: u8 = 0x40;
-/// If r1 evaluates to false as a boolean, i.e, it is `'\0'`, `0`, or `0.0` or is empty, then r2 is 0 else r2 is 1
+/// If `r1` evaluates to false as a boolean, i.e, it is `'\0'`, `0`, or `0.0` or is empty, then r2 is 0 else r2 is 1
 pub const ISN0: u8 = 0x47;
-/// r1 <- !r1
+/// `r1 <- !r1`
 pub const LNOT: u8 = 0x48;
-/// ip <- addr if NOT r1
+/// `ip <- addr` if NOT `r1`
 pub const BRANCH: u8 = 0x49;
-/// ip <- addr
+/// `ip <- addr`
 pub const JUMP: u8 = 0x4a;
 
-// fstcall r1, r2, r3, n
-// r1 is the register with callable.
-// (r2-1) is the register to store return value. If r2 is zero, return value is discarded.
-// r3 is the register starting from which the arguments are read, i.e, if function requires n parameters then the registers r3, r3+1, r3+2, ..., r3+(n-1) are read.
-// n is the number of parameters.
+/// `fstcall r1, r2, r3, n`
+///
+/// * `r1` is the register with callable.
+/// * `(r2-1)` is the register to store return value. If r2 is zero, return value is discarded.
+/// * `r3` is the register starting from which the arguments are read, i.e, if function requires n parameters then the registers r3, r3+1, r3+2, ..., r3+(n-1) are read.
+/// * `n` is the number of parameters.
 pub const FSTCALL: u8 = 0x11;
 
 /// No-op instruction. Does nothing.
 pub const NOP: u8 = 0x50;
 /// Sets the debug line number in the current stack frame.
 pub const DBGLN: u8 = 0x51;
-/// if !r then raise error, otherwise pass
+/// if `!r` then raise error, otherwise pass
 pub const ASSERT: u8 = 0x52;
 
-/// r1 <- []
+/// `r1 <- []`
 pub const NEWLIST: u8 = 0x60;
-/// r3 <- r1[r2]
+/// `r3 <- r1[r2]`
 pub const GETINDEX: u8   = 0x61;
-/// r1[r2] <- r3
+/// `r1[r2] <- r3`
 pub const PUTINDEX: u8 = 0x62;
-/// push r1, r2
-/// r1.append(r2)
 /// Append a value to the end of list-like item.
+///
+/// Usage: `push r1, r2`
+///
+/// `r1.append(r2)`
 pub const PUSH: u8 = 0x63;
 /// Remove the last value of the list and store in register.
-/// r2 <- r1.pop()
+///
+/// `r2 <- r1.pop()`
 pub const POP: u8 = 0x64;
-/// r2 <- r1.len()
+/// `r2 <- r1.len()`
 pub const LENGTH: u8 = 0x65;
 /// For list-like objects, create a view for sub-list.
-/// r1 <- r2[r3..r4]
+///
+/// `r1 <- r2[r3..r4]`
 pub const SLICE: u8 = 0x66;
 /// For list-like objects, create a view for the whole list.
-/// Equivalent to slice[0..len], where len is the length of the list-like object.
+/// Equivalent to `slice[0..len]`, where len is the length of the list-like object.
 pub const FSLICE: u8 = 0x67;
 /// Reverse slice or list-like object in-place
 pub const REVERSE:u8 = 0x68;
-/// r1 <- Str()
+/// `r1 <- Str()`
 pub const NEWSTR: u8 = 0x69;
-/// r1 <- (0, 0, ... r2 times)
+/// `r1 <- (0, 0, ... r2 times)`
 pub const NEWBITS:u8 = 0x6a;
-/// r1.advance_by(r2)
+/// `r1.advance_by(r2)`
 pub const ADVANCE:u8 = 0x6b;
-/// r1 <- range(r2..r3:r4)
+/// `r1 <- range(r2..r3:r4)`
 pub const NEWRANGE:u8= 0x6c;
-/// if r1 then r2 <- r1.pop() else ip <- addr;
+/// if `r1` then `r2 <- r1.pop()` else `ip <- addr`;
 pub const POPOR: u8 = 0x6d;
 
 /// stdcall r1, r2, rparam...
@@ -150,19 +165,24 @@ pub const POPOR: u8 = 0x6d;
 /// (r2-1) is the register to store return value. If r2 is zero, return value is discarded.
 /// each of rparam.. are registers whose values are arguments for the function call.
 pub const STDCALL: u8 = 0x12;
-/// r1 <- [i16] Obtain FRef Alloc for function within the module.
+/// Obtain FRef Alloc for function within the module.
+///
+/// `r1 <- [i16]`
 pub const LDF: u8 = 0x13;
-/// r1 <- [i16] Obtain FRef Alloc for extern defined in the module.
+/// Obtain FRef Alloc for extern defined in the module.
 /// Throws UnresolvedExtern if the extern declaration could not be resolved successfully.
+//
+/// `r1 <- [i16]`
 pub const LDX: u8 = 0x14;
 
 /// Print value stored in register with newline.
 pub const PRINT: u8 = 0xf0;
 /// Put current thread to sleep for r1 seconds.
 pub const SLEEP: u8 = 0xf1;
-/// getline %(prompt) %r
-/// r <- (line)
 /// Read characters from standard input until a newline ('\n') is encountered and store in a register.
+/// Usage: `getline %(prompt) %r`
+///
+/// `r <- (line)`
 pub const GETLN: u8 = 0xf2;
 /// Parse a string for an integer and store in a register.
 pub const PARSEINT: u8 = 0xf3;
@@ -222,6 +242,14 @@ impl TryFrom<&mut SliceView<'_>> for VariadicRegst {
 		}
 		Ok(VariadicRegst {regs: rvec})
 	}
+}
+
+impl From<Vec<u8>> for VariadicRegst {
+    fn from(value: Vec<u8>) -> Self {
+        Self {
+        	regs: value
+        }
+    }
 }
 
 impl AsBytes for VariadicRegst {

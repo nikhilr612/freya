@@ -227,9 +227,9 @@ impl Sexpr {
 	}
 
 	/// Get the offset from which this S-expr starts.
-	fn location(&self) -> &TextualLocation {
+	/*fn location(&self) -> &TextualLocation {
 		&self.loc
-	}
+	}*/
 
 	/// Iterate through the elements of the S-expr immutably.
 	/// Returns `Err` if S-expr is `Atom`.
@@ -253,6 +253,29 @@ impl Sexpr {
 	/// The error comprises of a generic error message, which ought to be augmented with additional context.
 	fn inspect_symbol(&self) -> Result<&str, TlError> {
 		match &self.kind {
+			SexprKind::Atom(Token::Symbol(s)) => Ok(s),
+			SexprKind::Atom(t) => {
+				Err(TlError {
+					etype: TlErrorType::IllegalAtom,
+					msg: format!("Expecting Symbol, found {t}."), 
+					loc: self.loc
+				})
+			},
+			SexprKind::List(_) => {
+				Err(TlError {
+					etype: TlErrorType::ExpectingList,
+					msg: "Expecting Symbol, found list.".to_owned(), 
+					loc: self.loc
+				})
+			}
+		}
+	}
+
+	/// Consume this S-expr and yield the inner symbol`.
+	/// Returns `Err` if S-expr is a `List`, or any `Atom` other than `Symbol`.
+	/// The error comprises of a generic error message, which ought to be augmented with additional context.
+	fn symbol(self) -> Result<String, TlError> {
+		match self.kind {
 			SexprKind::Atom(Token::Symbol(s)) => Ok(s),
 			SexprKind::Atom(t) => {
 				Err(TlError {
@@ -321,10 +344,6 @@ pub struct TlError {
 }
 
 impl TlError {
-	fn is_io(&self) -> bool {
-		matches!(self.etype, TlErrorType::IoError)
-	}
-
 	/// Create a new error whose message has "context: {msg}" appended to it.
 	/// This method should be used be used to add more context to an error.
 	fn aug(mut self, msg: &str) -> Self {
@@ -356,7 +375,7 @@ impl TlError {
 
 	/// Collect multiple errors (if any) into a single `Complex` error.
 	/// Returns `Ok(())` if none of the results yielded by iterator are errors.
-	fn collect(itr: impl Iterator<Item = Result<(), TlError>>, msg: impl Into<String>) -> Result<(), TlError> {
+	fn capture(itr: impl Iterator<Item = Result<(), TlError>>, msg: impl Into<String>) -> Result<(), TlError> {
 		let mut v = Vec::new();
 		for it in itr {
 			if let Err(e) = it { v.push(e) }
@@ -370,6 +389,38 @@ impl TlError {
 				msg: msg.into(),
 				loc
 			})
+		}
+	}
+
+	/// Consume the iterator, mapping all `Ok` results with `op` and collecting the return values into a `Vec`.
+	/// If an error occurs, further mapping does not occur; instead all errors from the iterator is collected into a `Complex` error with `msg` as message. 
+	fn map_collect<T,F,E>(
+		itr: impl Iterator<Item = Result<T, TlError>>,
+		mut op: F,
+		msg: impl Into<String>,
+	) -> Result<Vec<E>,TlError>
+	where F: FnMut(T) -> E {
+		let mut errs = Vec::new();
+		let mut vals = Vec::new();
+		let mut no_error = true;
+
+		for v in itr {
+			match v {
+				Ok(a) => {
+					if no_error { vals.push(op(a)) }
+				},
+				Err(e) => {
+					errs.push(e);
+					no_error = false;
+				}
+			}
+		}
+
+		if no_error {
+			Ok(vals)
+		} else {
+			let loc = errs.first().unwrap().loc;
+			Err(TlError { etype: TlErrorType::Complex(errs), msg: msg.into(), loc })
 		}
 	}
 }

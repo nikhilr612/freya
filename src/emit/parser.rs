@@ -180,7 +180,7 @@ fn match_parse_literal (ch: char, buf: String, loc: TextualLocation) -> Result<S
 	// ----------------------------------------------------- //
 	// If lead character is alphabetic, '_' or ':', then token is a symbol.
 
-	} else if ch.is_alphabetic() || ch == ':' || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
+	} else if ch.is_alphabetic() || ch == '_' || buf == "+" || buf == "-" { // If the whole token text itself is just '+' or '-', then they are symbols.
 		atom!(Symbol(buf), loc) // Symbol
 	
 	// ----------------------------------------------------- //
@@ -216,10 +216,8 @@ fn match_parse_literal (ch: char, buf: String, loc: TextualLocation) -> Result<S
 	// ----------------------------------------------------- //
 	// Any other 'ch', i.e, one that is neither alphabetic, _, nor ascii digit, constitutes a symbol.
 
-	} else { 
-		// These symbols are no good, so emit a warning/note.
-		eprintln!("Note: If token '{buf}' {:?} is a symbol, consider renaming with an alphabet or '_' as the first character", loc);
-		// Ok(Sexpr::Atom(Token { ttype: TokenType::Symbol(buf), start, end}))
+	} else {
+		// Otherwise, it's a symbol - no doubt.
 		atom!(Symbol(buf), loc)
 	}
 }
