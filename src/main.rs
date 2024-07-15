@@ -181,7 +181,9 @@ fn main() -> ExitCode {
                 });
             }
         },
-        args::Commands::MonoCompile { path } => {
+        args::Commands::MonoCompile { path, output } => {
+            let output = output.map(PathBuf::from).unwrap_or(Path::new(&path).with_extension("fr"));
+            trace!("Input: {path}, Output: {}", output.display());
             let file = File::open(path).expect("Failed to open file");
             let mut reader = BufReader::new(file);
             let ast = match emit::parse(&mut reader) {
@@ -202,6 +204,12 @@ fn main() -> ExitCode {
                 },
                 Ok(cu) => {
                     debug!("CU:\n{cu:#?}");
+                    if let Err(e) = cu.finish(output) {
+                        error!("Failed to finish code generation.");
+                        eprintln!("{e}");
+                        return ExitCode::FAILURE;
+                    }
+                    info!("Sucessfully completed codegen.");
                 }
             }
         }

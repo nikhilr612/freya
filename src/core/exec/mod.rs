@@ -239,8 +239,7 @@ impl WorkerThread {
 						let cur_frame = &mut self.stack[stack_top-1];
 						if let Some(ret_reg) = cur_frame.rslot {
 							let val = frame.take_register(r1, &mut self.refc)?;
-							let ret_reg = ret_reg as usize;
-							cur_frame._write_unchecked(ret_reg, val, &mut self.refc)?;
+							cur_frame.writeopt_register(ret_reg, val, &mut self.refc)?;
 							cur_frame.rslot = None;
 						}
 					}
@@ -432,7 +431,7 @@ impl WorkerThread {
 				},
 				op::NOP => {},
 				op::DBGLN => {
-					let line_number = slvw.get_u32();
+					let line_number = slvw.get_u16();
 					cur_frame.set_lineno(line_number);
 				},
 				op::ASSERT => {

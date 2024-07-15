@@ -12,7 +12,7 @@ pub struct CallFrame {
 	/// Id of the function for debugging purposes.
 	function_id: usize,
 	/// Line number updated whenever LINENUMBER instruction is encountered.
-	debug_lnum: u32,
+	debug_lnum: u16,
 	/// Vector of base types; indices simulate registers.
 	pub(super) regs: Vec<Option<BaseType>>,
 	/// The register to write the return value into.
@@ -109,12 +109,9 @@ impl CallFrame {
 		})
 	}
 
-	#[deprecated(since = "0.2.6", note = "Formerly common to write and drop. Prefer checked variant whenever needed.")]
-	pub fn _write_unchecked(&mut self, rid: usize, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
-		if let Some(btype) = self.regs[rid].take() {
-			Self::cleanup_value(btype, rc)?;
-		}
-		self.regs[rid] = val;
+	pub fn writeopt_register(&mut self, rid: u8, val: Option<BaseType>, rc: &mut RefCounter) -> FResult<()>{
+		self.drop_register(rid, rc)?;
+		self.regs[rid as usize] = val;
 		Ok(())
 	}
 
@@ -305,12 +302,12 @@ impl CallFrame {
 
 	/// Set the line number for the frame; useful for debugging purposes.
 	/// All instructions betweeen two successive calls of this function will be regarded as having line `debug_lnum`,
-	pub fn set_lineno(&mut self, debug_lnum: u32) {
+	pub fn set_lineno(&mut self, debug_lnum: u16) {
 		self.debug_lnum = debug_lnum;
 	}
 
 	/// Get line number debug-info for this frame, i.e, value passed to the last call of `set_lineno`.
-	pub fn lineno(&self) -> u32 {
+	pub fn lineno(&self) -> u16 {
 		self.debug_lnum
 	}
 

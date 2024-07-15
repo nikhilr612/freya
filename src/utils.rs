@@ -112,6 +112,7 @@ impl<T: Write> OutBuf for T {
 		self.write_all(&buf)
 	}
 
+	/// This method **does not** write string length; only the content as bytes.
 	fn write_str(&mut self, v: &str) -> IoResult<()> {
 		self.write_all(v.as_bytes())
 	}

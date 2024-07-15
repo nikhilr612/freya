@@ -45,7 +45,7 @@ pub enum Commands {
 	#[clap(alias = "vh")]
 	VerifyHeader { path: String },
 	/// Load and execute the given file.
-	#[clap(alias = "x")]
+	#[clap(visible_alias = "x")]
 	Exec {
 		/// Path to the file which needs to be executed.
 		filepath: String,
@@ -59,7 +59,7 @@ pub enum Commands {
 		/// Command line args passed to main.
 		cmdargs: Vec<String>
 	},
-	#[clap(alias = "asm")]
+	#[clap(visible_alias = "asm")]
 	/// Assemble a source file to bytecode. If debug flag is set, line numbers are emitted.
 	Assemble { 
 		/// Path to the assembly file, or a glob matching assembly files (requires --all flag)
@@ -74,6 +74,8 @@ pub enum Commands {
 	#[clap(alias = "mc")]
 	MonoCompile {
 		/// Path to the source file.
-		path: String
+		path: String,
+		/// Path to the output file.
+		output: Option<String>
 	}
 }
