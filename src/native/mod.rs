@@ -1,5 +1,5 @@
-mod napi;
 mod iface;
+mod napi;
 
-pub use napi::*;
 pub use iface::*;
+pub use napi::*;

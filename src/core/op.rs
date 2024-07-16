@@ -8,8 +8,8 @@
 //! 6. Debug related instructions: 0x5_
 //! 7. String, list related instructions: 0x6_
 
+use super::{types, ErrorType, FatalErr};
 use crate::utils::{AsBytes, OutBuf, SliceView};
-use super::{FatalErr, ErrorType, types};
 
 use paste::paste;
 
@@ -19,7 +19,7 @@ pub const ADD: u8 = 0x30;
 pub const SUB: u8 = 0x31;
 /// Set `r3 <- r1 * r2`
 pub const MUL: u8 = 0x32;
-/// Set `r3 <- r1 / r2` 
+/// Set `r3 <- r1 / r2`
 /// Note: r3 always has type `Flt`
 pub const DIV: u8 = 0x33;
 /// Set `r1 <- r1 + (i16)`
@@ -51,7 +51,7 @@ pub const EXP: u8 = 0x3e;
 pub const FLOOR: u8 = 0x3f;
 /// Return from current function. Return value in register r1.
 pub const RET: u8 = 0x10;
-/// Return 
+/// Return
 pub const VRET: u8 = 0x1f;
 /// Load from Constant Pool
 ///
@@ -125,7 +125,7 @@ pub const ASSERT: u8 = 0x52;
 /// `r1 <- []`
 pub const NEWLIST: u8 = 0x60;
 /// `r3 <- r1[r2]`
-pub const GETINDEX: u8   = 0x61;
+pub const GETINDEX: u8 = 0x61;
 /// `r1[r2] <- r3`
 pub const PUTINDEX: u8 = 0x62;
 /// Append a value to the end of list-like item.
@@ -148,15 +148,15 @@ pub const SLICE: u8 = 0x66;
 /// Equivalent to `slice[0..len]`, where len is the length of the list-like object.
 pub const FSLICE: u8 = 0x67;
 /// Reverse slice or list-like object in-place
-pub const REVERSE:u8 = 0x68;
+pub const REVERSE: u8 = 0x68;
 /// `r1 <- Str()`
 pub const NEWSTR: u8 = 0x69;
 /// `r1 <- (0, 0, ... r2 times)`
-pub const NEWBITS:u8 = 0x6a;
+pub const NEWBITS: u8 = 0x6a;
 /// `r1.advance_by(r2)`
-pub const ADVANCE:u8 = 0x6b;
+pub const ADVANCE: u8 = 0x6b;
 /// `r1 <- range(r2..r3:r4)`
-pub const NEWRANGE:u8= 0x6c;
+pub const NEWRANGE: u8 = 0x6c;
 /// if `r1` then `r2 <- r1.pop()` else `ip <- addr`;
 pub const POPOR: u8 = 0x6d;
 
@@ -223,152 +223,163 @@ macro_rules! def_instr {
 }
 
 pub(crate) struct VariadicRegst {
-	pub regs: Vec<u8>
+    pub regs: Vec<u8>,
 }
 
 impl TryFrom<&mut SliceView<'_>> for VariadicRegst {
-	type Error = FatalErr;
-	fn try_from(sl: &mut SliceView) -> Result<Self,Self::Error> {
-		if sl.bytes_left() < 1 {
-			return Err(types::new_error(ErrorType::IncompleteInstr, format!("Expecting size byte for variadic instruction, offset: {}", sl.offset())));
-		}
-		let size = sl.get_u8() as usize;
-		let mut rvec = vec![0; size];
-		if sl.bytes_left() < size {
-			return Err(types::new_error(ErrorType::IncompleteInstr, format!("Expecting {size} bytes for variadic instruction, found {} at offset {}", sl.bytes_left(), sl.offset())));
-		}
-		for r in rvec.iter_mut() {
-			*r = sl.get_u8();
-		}
-		Ok(VariadicRegst {regs: rvec})
-	}
+    type Error = FatalErr;
+    fn try_from(sl: &mut SliceView) -> Result<Self, Self::Error> {
+        if sl.bytes_left() < 1 {
+            return Err(types::new_error(
+                ErrorType::IncompleteInstr,
+                format!(
+                    "Expecting size byte for variadic instruction, offset: {}",
+                    sl.offset()
+                ),
+            ));
+        }
+        let size = sl.get_u8() as usize;
+        let mut rvec = vec![0; size];
+        if sl.bytes_left() < size {
+            return Err(types::new_error(
+                ErrorType::IncompleteInstr,
+                format!(
+                    "Expecting {size} bytes for variadic instruction, found {} at offset {}",
+                    sl.bytes_left(),
+                    sl.offset()
+                ),
+            ));
+        }
+        for r in rvec.iter_mut() {
+            *r = sl.get_u8();
+        }
+        Ok(VariadicRegst { regs: rvec })
+    }
 }
 
 impl From<Vec<u8>> for VariadicRegst {
     fn from(value: Vec<u8>) -> Self {
-        Self {
-        	regs: value
-        }
+        Self { regs: value }
     }
 }
 
 impl AsBytes for VariadicRegst {
-	fn write(&self, buf: &mut impl OutBuf) -> Result<(), std::io::Error> {
-		buf.write_u8(self.regs.len() as u8)?;
-		for i in 0..self.regs.len() {
-			buf.write_u8(self.regs[i])?;
-		}
-		Ok(())
-	}
+    fn write(&self, buf: &mut impl OutBuf) -> Result<(), std::io::Error> {
+        buf.write_u8(self.regs.len() as u8)?;
+        for i in 0..self.regs.len() {
+            buf.write_u8(self.regs[i])?;
+        }
+        Ok(())
+    }
 }
 
 // Instruction type specifying three registers.
 // Used primarily for arithmetic operations.
 def_instr! {
-	TripleRegst {
-		r1: u8,
-		r2: u8,
-		r3: u8
-	} [3]
+    TripleRegst {
+        r1: u8,
+        r2: u8,
+        r3: u8
+    } [3]
 }
 
 def_instr! {
-	DoubleRegst {
-		r1: u8,
-		r2: u8
-	} [2]
+    DoubleRegst {
+        r1: u8,
+        r2: u8
+    } [2]
 }
 
 def_instr! {
-	Id16Reg {
-		id: u16,
-		r1: u8
-	} [3]
+    Id16Reg {
+        id: u16,
+        r1: u8
+    } [3]
 }
 
 def_instr! {
-	RegAddr {
-		r1: u8,
-		addr: u32
-	} [5]
+    RegAddr {
+        r1: u8,
+        addr: u32
+    } [5]
 }
 
 def_instr! {
-	BiRegAddr {
-		r1: u8,
-		r2: u8,
-		addr: u32
-	} [6]
+    BiRegAddr {
+        r1: u8,
+        r2: u8,
+        addr: u32
+    } [6]
 }
 
 def_instr! {
-	QuadrupleRegst {
-		r1: u8,
-		r2: u8,
-		s1: u8,
-		s2: u8
-	} [4]
+    QuadrupleRegst {
+        r1: u8,
+        r2: u8,
+        s1: u8,
+        s2: u8
+    } [4]
 }
 
 pub fn triplet_mnemonic_map(head: &str) -> Option<u8> {
-	match head{
-		"add" => Some(ADD),
-		"sub" => Some(SUB),
-		"div" => Some(DIV),
-		"mul" => Some(MUL),
-		"idv" => Some(IDIV),
-		"rem" => Some(REM),
-		"bt&" => Some(BAND),
-		"bt|" => Some(BOR),
-		"xor" => Some(XOR),
-		"exp" => Some(EXP),
-		"rlt" => Some(RLT),
-		"rle" => Some(RLE),
-		"rgt" => Some(RGT),
-		"rge" => Some(RGE),
-		"req" => Some(REQ),
-		"rne" => Some(RNEQ),
-		"bls" => Some(LSHIFT),
-		"brs" => Some(RSHIFT),
-		"get" => Some(GETINDEX),
-		"put" => Some(PUTINDEX),
-		_ => None
-	}
+    match head {
+        "add" => Some(ADD),
+        "sub" => Some(SUB),
+        "div" => Some(DIV),
+        "mul" => Some(MUL),
+        "idv" => Some(IDIV),
+        "rem" => Some(REM),
+        "bt&" => Some(BAND),
+        "bt|" => Some(BOR),
+        "xor" => Some(XOR),
+        "exp" => Some(EXP),
+        "rlt" => Some(RLT),
+        "rle" => Some(RLE),
+        "rgt" => Some(RGT),
+        "rge" => Some(RGE),
+        "req" => Some(REQ),
+        "rne" => Some(RNEQ),
+        "bls" => Some(LSHIFT),
+        "brs" => Some(RSHIFT),
+        "get" => Some(GETINDEX),
+        "put" => Some(PUTINDEX),
+        _ => None,
+    }
 }
 
 pub fn doublet_mnemonic_map(head: &str) -> Option<u8> {
-	match head {
-		"swap" => Some(SWAP),
-		"&mut" => Some(BWM),
-		"&imt" => Some(BWI),
-		"floor" =>Some(FLOOR),
-		"bnot" => Some(BNOT),
-		"move" => Some(MOV),
-		"isn0" => Some(ISN0),
-		"assert"=>Some(ASSERT),
-		"gline" =>Some(GETLN),
-		"s2int" => Some(PARSEINT),
-		"s2flt" => Some(PARSEFLT),
-		"fslice"=>Some(FSLICE),
-		"push" => Some(PUSH),
-		"pop"  => Some(POP),
-		"len" =>Some(LENGTH),
-		"advan" => Some(ADVANCE),
-		"newbs" => Some(NEWBITS),
-		_ => None
-	}
+    match head {
+        "swap" => Some(SWAP),
+        "&mut" => Some(BWM),
+        "&imt" => Some(BWI),
+        "floor" => Some(FLOOR),
+        "bnot" => Some(BNOT),
+        "move" => Some(MOV),
+        "isn0" => Some(ISN0),
+        "assert" => Some(ASSERT),
+        "gline" => Some(GETLN),
+        "s2int" => Some(PARSEINT),
+        "s2flt" => Some(PARSEFLT),
+        "fslice" => Some(FSLICE),
+        "push" => Some(PUSH),
+        "pop" => Some(POP),
+        "len" => Some(LENGTH),
+        "advan" => Some(ADVANCE),
+        "newbs" => Some(NEWBITS),
+        _ => None,
+    }
 }
 
 pub fn singlet_mnemonic_map(head: &str) -> Option<u8> {
-	match head {
-		"print" => Some(PRINT),
-		"sleep" => Some(SLEEP),
-		"incr1" => Some(INC1),
-		"lnot"  => Some(LNOT),
-		"drop"  => Some(DROP),
-		"newls" => Some(NEWLIST),
-		"newst" => Some(NEWSTR),
-		"revrs" => Some(REVERSE), 
-		_ => None
-	}
+    match head {
+        "print" => Some(PRINT),
+        "sleep" => Some(SLEEP),
+        "incr1" => Some(INC1),
+        "lnot" => Some(LNOT),
+        "drop" => Some(DROP),
+        "newls" => Some(NEWLIST),
+        "newst" => Some(NEWSTR),
+        "revrs" => Some(REVERSE),
+        _ => None,
+    }
 }

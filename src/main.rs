@@ -1,25 +1,25 @@
 //! A simple register-based process virtual machine written in Rust.
 
-use log::{debug, warn, error, info, trace};
-use std::path::PathBuf;
-use std::sync::RwLock;
-use std::path::Path;
-use std::sync::Arc;
-use std::io::Write;
+use clap::Parser;
+use log::{debug, error, info, trace, warn};
+use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
-use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
-use clap::Parser;
+use std::sync::Arc;
+use std::sync::RwLock;
 
-mod core;
 mod args;
-mod utils;
+mod core;
 mod emit;
 mod multi;
+mod utils;
 
-use core::module;
 use core::exec;
+use core::module;
 
 pub mod native;
 
@@ -40,16 +40,28 @@ macro_rules! on_error_exit_gracefully {
 fn assemble_one(path: &PathBuf, outpath: &PathBuf, debug: bool) -> Result<(), String> {
     // Almost gave in to the generics-mania here...
 
-    let file = File::open(path)
-                .map_err(|e| format!("Failed to open input file {},\n\tdetail: {e}", path.display()))?;
+    let file = File::open(path).map_err(|e| {
+        format!(
+            "Failed to open input file {},\n\tdetail: {e}",
+            path.display()
+        )
+    })?;
 
     if let Some(p) = outpath.parent() {
-        std::fs::create_dir_all(p)
-            .map_err(|e| format!("Failed to create output directory {},\n\tdetail: {e}", p.display()))?;
+        std::fs::create_dir_all(p).map_err(|e| {
+            format!(
+                "Failed to create output directory {},\n\tdetail: {e}",
+                p.display()
+            )
+        })?;
     }
 
-    let out = File::create(outpath)
-                .map_err(|e| format!("Failed to create output file {},\n\tdetail: {e}", outpath.display()))?;
+    let out = File::create(outpath).map_err(|e| {
+        format!(
+            "Failed to create output file {},\n\tdetail: {e}",
+            outpath.display()
+        )
+    })?;
 
     let mut b_in = BufReader::new(file);
     let mut b_out = BufWriter::new(out);
@@ -59,32 +71,43 @@ fn assemble_one(path: &PathBuf, outpath: &PathBuf, debug: bool) -> Result<(), St
     match emit::asm(&mut b_out, &mut b_in, &mut line, &mut lno, debug) {
         Ok(()) => {
             info!("Done with {}", path.display());
-        },
+        }
         Err(s) => {
-            return Err(format!("{s}\nError occured at line {lno},\n{lno}| {line}\tin {}", path.display()));
+            return Err(format!(
+                "{s}\nError occured at line {lno},\n{lno}| {line}\tin {}",
+                path.display()
+            ));
         }
     }
 
-    b_out.flush().map_err(|e| format!("Failed to flush contents to file {},\n\tdetail: {e}", outpath.display()))?;
+    b_out.flush().map_err(|e| {
+        format!(
+            "Failed to flush contents to file {},\n\tdetail: {e}",
+            outpath.display()
+        )
+    })?;
     Ok(())
 }
 
 fn resolve_glob(path: &str, output: Option<&String>) -> Vec<(PathBuf, PathBuf)> {
     let it = glob::glob(path)
-       .expect("Could not read glob from input.")
-       .filter_map(|s| s.ok());
+        .expect("Could not read glob from input.")
+        .filter_map(|s| s.ok());
 
     let v: Vec<_> = match output {
-        None => 
-            it.map(|p| {
+        None => it
+            .map(|p| {
                 let p2 = p.with_extension("fr");
                 (p, p2)
             })
             .collect(),
-        Some(dir) => {
-            it.map(|p| {
+        Some(dir) => it
+            .map(|p| {
                 if p.is_absolute() {
-                    warn!("{} is an absolute path, so output directory is ignored.", p.display());
+                    warn!(
+                        "{} is an absolute path, so output directory is ignored.",
+                        p.display()
+                    );
                     let p3 = p.with_extension("fr");
                     (p, p3)
                 } else {
@@ -94,8 +117,7 @@ fn resolve_glob(path: &str, output: Option<&String>) -> Vec<(PathBuf, PathBuf)> 
                     (p, p3)
                 }
             })
-            .collect()
-        }
+            .collect(),
     };
     v
 }
@@ -109,7 +131,7 @@ fn assemble_many(path: String, output: Option<String>, debug: bool) -> ExitCode 
     }
 
     trace!("Found files.");
-    pairs.iter().for_each(|(a,b)| {
+    pairs.iter().for_each(|(a, b)| {
         debug!("{} => {}", a.display(), b.display());
     });
 
@@ -132,17 +154,25 @@ fn main() -> ExitCode {
     let cli = args::MainArgs::parse();
 
     match cli.command {
-        args::Commands::VerifyHeader {path} => {
+        args::Commands::VerifyHeader { path } => {
             println!("{:#?}", module::open(&path));
-        },
-        args::Commands::Exec {filepath, pathlist, nlibpath, cmdargs} => {
+        }
+        args::Commands::Exec {
+            filepath,
+            pathlist,
+            nlibpath,
+            cmdargs,
+        } => {
             trace!("Recevied cmdargs: {cmdargs:#?}");
             let to_pass = core::list_from_strings(cmdargs.into_iter());
 
             let mut nifp = native::InterfacePool::default();
             for path in nlibpath {
-                if let Some((a,b)) = path.split_once('=') { nifp.add_path(a, b) }
-                else { eprintln!("WARNING: {path} is not a valid key-value pair for specifying libraries. Expect [name]=[path] format."); }
+                if let Some((a, b)) = path.split_once('=') {
+                    nifp.add_path(a, b)
+                } else {
+                    eprintln!("WARNING: {path} is not a valid key-value pair for specifying libraries. Expect [name]=[path] format.");
+                }
             }
 
             let nifp = Arc::new(RwLock::new(nifp));
@@ -151,38 +181,56 @@ fn main() -> ExitCode {
             for path in pathlist {
                 mp.add_path(Path::new(&path));
             }
-            mp.add_path(std::env::current_dir().expect("Failed to read current working directory path").as_path());
-            
+            mp.add_path(
+                std::env::current_dir()
+                    .expect("Failed to read current working directory path")
+                    .as_path(),
+            );
+
             let res = mp.load(&filepath);
-            on_error_exit_gracefully!(res, e, {eprintln!("{e}");});
+            on_error_exit_gracefully!(res, e, {
+                eprintln!("{e}");
+            });
             let mp = Arc::new(mp);
 
             let ep = cli.entry_pt.unwrap_or("main".to_string());
-            
-            let mut wt = exec::WorkerThread::
-                        with_args(&filepath, &ep, 
-                            cli.refctl, mp.clone(), nifp.clone(),
-                            std::iter::once(to_pass));
+
+            let mut wt = exec::WorkerThread::with_args(
+                &filepath,
+                &ep,
+                cli.refctl,
+                mp.clone(),
+                nifp.clone(),
+                std::iter::once(to_pass),
+            );
 
             let res = wt.begin();
             on_error_exit_gracefully!(res, e, {
                 eprintln!("{}", e);
                 wt.print_stack_trace();
             });
-        },
-        args::Commands::Assemble {path, output, is_glob} => {
+        }
+        args::Commands::Assemble {
+            path,
+            output,
+            is_glob,
+        } => {
             if is_glob {
                 return assemble_many(path, output, cli.debug);
             } else {
                 let path = PathBuf::from(path);
-                let outpath = output.map(PathBuf::from).unwrap_or_else(|| path.with_extension("fr"));
+                let outpath = output
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| path.with_extension("fr"));
                 assemble_one(&path, &outpath, cli.debug).unwrap_or_else(|e| {
                     eprintln!("{e}");
                 });
             }
-        },
+        }
         args::Commands::MonoCompile { path, output } => {
-            let output = output.map(PathBuf::from).unwrap_or(Path::new(&path).with_extension("fr"));
+            let output = output
+                .map(PathBuf::from)
+                .unwrap_or(Path::new(&path).with_extension("fr"));
             trace!("Input: {path}, Output: {}", output.display());
             let file = File::open(path).expect("Failed to open file");
             let mut reader = BufReader::new(file);
@@ -201,7 +249,7 @@ fn main() -> ExitCode {
                     error!("Failed to walk AST.");
                     eprintln!("{e:#?}");
                     return ExitCode::FAILURE;
-                },
+                }
                 Ok(cu) => {
                     debug!("CU:\n{cu:#?}");
                     if let Err(e) = cu.finish(output) {
