@@ -1,0 +1,8 @@
+; Test out begin form. Print multiple statements.
+(define (main arglist)
+	(begin
+		(print "Hello World!")
+		(print arglist)
+		None
+	)
+)

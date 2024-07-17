@@ -1,7 +1,6 @@
 ; A simple program to print "Hello World!"
 ; `main` is the entry point.
-(define (my-print x) None)
 (define (main)
 	; Print the string literal to stdout.
-	(my-print "Hello World!")
+	(print "Hello World!")
 )

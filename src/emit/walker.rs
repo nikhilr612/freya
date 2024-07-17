@@ -1,5 +1,18 @@
 //! Module to traverse parsed S-expressions (AST) and generate VM modules.
 //! Walkers in this module emit equivalent bytecode.
+//!
+//! ## Definitions
+//! 1. __Atom__: Any of the tokens `Symbol`, `Integer`, `Float`, `Boolean`, `Char`, `Str` constitute an _atom_.
+//! 2. __List__: A _list_ of _S-expressions_.
+//! 3. __S-expression__: A value that is either a _List_ or an _Atom_ where the list is represented by a parenthesized string containing sub-S-expressions seperated by one or more whitespace characters.
+//! 4. __Root-level S-expression__: An S-expression whose parent has no parent.
+//! 5. __Literal Atom__: An atom that is not a `Symbol`.
+//! 6. __Special Form__: A _List_ whose first element is one of the form-reserved symbols and whose other sub-S-expressions satisfy suitable corresponding constraints is termed _Special Form_ or simply _form_.
+//! 7. __Indicator Symbol__: Any symbol conditionally matched by a special form.
+//! 8. __External Symbol__: Any symbol that matches the string-pattern `"A:B"` where `A` is an external module declared in root-level `require` form, External symbols are resolved into `ExternDecl`
+//! 9. __Regular List__: Any list which occurs as an S-expression (member or nested) in the body of a `func-type define` form.
+//!10. __Regular Symbol__: Any symbol that occurs in a _regular list_ and is not the first element of that list.
+//!11. __Regular S-expression__: Either a _regular symbol_ or a _regular list_
 
 use super::{Sexpr, SexprKind, TextualLocation, TlError, TlErrorType, Token};
 use crate::{
@@ -99,6 +112,12 @@ impl CompileUnit {
             .write_u8(opcode)
             .map_err(CompileUnit::_write_error)?;
         self.tmpfile.write_u8(v).map_err(CompileUnit::_write_error)
+    }
+
+    fn emit_drop(&mut self, ralloc: &mut StackAllocator, r: u8) -> Result<(), TlError> {
+    	self.emit_simple(op::DROP, r)?;
+    	ralloc.rel(1);
+    	Ok(())
     }
 
     /// Write an instruction with opcode `opcode` and operands specified by `content`.
@@ -279,6 +298,14 @@ fn visit_constant<'a>(
 	}
 }
 
+/// The `define` form comprises of two sub-S-expressions - `head` and `body`.
+/// * When `head` is a symbol, `define` form is said to be 'constant-type' or `const-type`.
+/// * When `head` is a symbol list, `define` form is said to be 'function-type' or `func-type`
+/// * Any other S-expressions constitute an invalid `define` form.
+///
+/// All `define` forms bind names into the global scope, and thus are _only matched when occurring as root-level lists_.
+/// Function-type `define` forms are visited first to bind names into the global scope, after which their body is walked.
+/// This eliminated the need for any kind of forward declaration, and functions are allowed to freely recurse with each other.
 fn visit_define_form<'a>(
     mut it: impl Iterator<Item = &'a Sexpr>,
     cu: &mut CompileUnit,
@@ -353,6 +380,18 @@ fn visit_define_form<'a>(
     }
 }
 
+/// The require form binds a path-string to an external module to a name in the current unit.
+/// The require form has two 2-3 sub-S-expressions - `(require path name indicator)`.
+/// * `path` must always be a `String` atom.
+/// * `name` must always be a `Symbol` atom.
+/// * `indicator` is an optionally matched sub-S-expression which when found MUST be a symbol that is one of: `:native`, `:module`, or `:rawstr`.
+/// If indicator is not specified, the result is the same as if the indicator `:module` was specified.
+///
+/// If the indicator is `:native`, all external functions from this name will be presmued as native `ExternDecl`, i.e, native functions.
+///
+/// If the indicator is `:module`, all external functions from this name will be non-native, VM functions.
+///
+/// If the indicator is `:rawstr`, the contents of file specified by `path` is read into a `Str` which is then bound to `name`. This variant is equivalent to a `const-type define` form with the contents of the file as a `Str` literal atom 'body'.
 fn visit_require_form<'a>(
     mut it: impl Iterator<Item = &'a Sexpr>,
     cu: &mut CompileUnit,
@@ -607,9 +646,15 @@ fn walk_define_form(
                         loc: c.loc,
                     })?;
             }
-            let r = walk_regular_list(v, &mut ralloc, cu, sc, c.loc, false)?;
+            let r = walk_regular_list(v, &mut ralloc, cu, &mut function_scope, c.loc, false)?;
             cu.functions[fidx].1.nregs = ralloc.max;
-            cu.emit_simple(op::RET, r)
+            match r {
+                None => cu
+                    .tmpfile
+                    .write_u8(op::VRET)
+                    .map_err(CompileUnit::_write_error),
+                Some((r, _)) => cu.emit_simple(op::RET, r),
+            }
         }
     }
 }
@@ -623,8 +668,87 @@ fn check_regs_adjacent(v: &[u8]) -> bool {
     true
 }
 
+/// Walk `print` form. Takes exactly one sub-S-expression - the value to print.
+/// In effect `print` is a _procedure_, not a pure function.
+fn walk_print_form(
+    it: impl Iterator<Item = Sexpr>,
+    ralloc: &mut StackAllocator,
+    cu: &mut CompileUnit,
+    sc: &mut Scope<'_>,
+    loc: TextualLocation,
+) -> Result<(), TlError> {
+    let mut it = it.take(2);
+    let ast = it.next().ok_or_else(|| TlError {
+        etype: TlErrorType::InvalidForm,
+        msg: "Incomplete print form; value not specified.".to_owned(),
+        loc,
+    })?;
+    not_ok(it.next()).map_err(|_| TlError {
+        etype: TlErrorType::InvalidForm,
+        msg: "Print form takes exactly one sub-S-expression; found another.".to_owned(),
+        loc,
+    })?;
+    let (r, t) = walk_regular_sexpr(ast, ralloc, cu, sc)?;
+    cu.emit_simple(op::PRINT, r)?;
+    if t {
+    	cu.emit_drop(ralloc, r)?;
+    }
+    Ok(())
+}
+
+/// Similar to [walk_regular_sexpr] except that it doesn't require sexpr to yield values.
+fn walk_opt_sexpr(
+	ast: Sexpr,
+    ralloc: &mut StackAllocator,
+    cu: &mut CompileUnit,
+    sc: &mut Scope<'_>
+) -> Result<Option<(u8, bool)>, TlError> {
+	match ast.kind {
+        SexprKind::Atom(Token::Symbol(s)) => {
+        	Ok(Some(walk_regular_symbol(s, ralloc, cu, sc, ast.loc)?))
+        },
+        SexprKind::Atom(t) => {
+            let r = ralloc.get();
+            eat_literal_atom(t, cu, r)?;
+            // TODO: Consider adding a way for literal atoms to not be cleaned up.. Although this may be pointless.
+            Ok(Some((r, true)))
+        }
+        SexprKind::List(v) => {
+            let r = walk_regular_list(v, ralloc, cu, sc, ast.loc, true)?;
+            Ok(r)
+        }
+    }
+}
+
+fn walk_begin_form(
+	mut it: impl Iterator<Item = Sexpr>,
+    ralloc: &mut StackAllocator,
+    cu: &mut CompileUnit,
+    sc: &mut Scope<'_>,
+    loc: TextualLocation
+) -> Result<(u8, bool), TlError> {
+	let v = it.next().ok_or_else(|| TlError {
+		etype: TlErrorType::InvalidForm,
+		msg: "Incomplete begin form; requires at least one S-expression".to_owned(),
+		loc
+	})?;
+	let mut last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
+	for v in it {
+		if let Some((u, true)) = last_eval {
+			cu.emit_drop(ralloc, u)?
+		}
+		last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
+	}
+	last_eval.ok_or_else(|| TlError {
+		etype: TlErrorType::InvalidForm,
+		msg: "Last S-expression in `begin` form must be regular".to_owned(),
+		loc
+	})
+}
+
 /// Walk a 'regular' list `(s0 s1 s2 .. sN)` occurring as an S-expr in (i.e, member of, or nested in) a function body.
-/// Eval value is contained in `r`.
+/// Returns the register containing the return value.
+/// If the regular list is a special form that does not evaluate to a value, then return `Ok(None)`
 ///
 /// If `s0` is itself a list - then this regular list performs a function call by:
 /// ```other
@@ -692,7 +816,7 @@ fn walk_regular_list(
     sc: &mut Scope<'_>,
     loc: TextualLocation,
     cleanup: bool,
-) -> Result<u8, TlError> {
+) -> Result<Option<(u8, bool)>, TlError> {
     let mut it = slist.into_iter();
 
     let s0 = it.next().ok_or_else(|| TlError {
@@ -708,7 +832,14 @@ fn walk_regular_list(
 	    SexprKind::Atom(Token::Symbol(s)) => {
 	    	match s.as_str() {
 	    		// Reserved forms
-	    		"print" => todo!("Implement print form."),
+	    		"print" => {
+	    			walk_print_form(it, ralloc, cu, sc, loc)?;
+	    			return Ok(None);
+	    		},
+	    		"begin" => {
+	    			let r = walk_begin_form(it, ralloc, cu, sc, loc)?;
+	    			return Ok(Some(r));
+	    		},
 	    		_ => walk_regular_symbol(s, ralloc, cu, sc, s0.loc)
 	    	}
 	    },
@@ -721,7 +852,13 @@ fn walk_regular_list(
 	    }
 	    SexprKind::List(v) => {
 	    	// This nested procedure call will cleanup it's own mess, so we don't have to,
-	    	walk_regular_list(v, ralloc, cu, sc, s0.loc, true).map(|u| (u, true))
+	    	walk_regular_list(v, ralloc, cu, sc, s0.loc, true)
+	    		.map_err(|e| e.aug("Trying to walkk nested regular list."))?
+	    		.ok_or_else(|| TlError {
+			        etype: TlErrorType::IllegalList,
+			        msg: "Nested regular list must return value".to_owned(),
+			        loc: s0.loc,
+			    })
 	    },
 	}?;
 
@@ -779,7 +916,9 @@ fn walk_regular_list(
         )?;
     }
 
-    Ok(eval_reg)
+    // Function calls will always give out temporary registers.
+    // The same cannot be said for other forms like `define` for instance.
+    Ok(Some((eval_reg, true)))
 }
 
 /// Check if this symbol is an external one.
@@ -854,18 +993,21 @@ fn walk_regular_symbol(
                 cu.emit(op::LDF, Id16Reg { id: index, r1 })?;
                 Ok((r1, true))
             }
-            None => Err(TlError {
-                etype: TlErrorType::UnknownSymbol,
-                msg: format!("Unknown symbol `{s}` as atom in regular sexpr"),
-                loc,
-            }),
+            None => {
+            	debug!("Current scope: {sc:#?}");
+            	Err(TlError {
+                	etype: TlErrorType::UnknownSymbol,
+                	msg: format!("Unknown symbol `{s}` as atom in regular sexpr"),
+                	loc,
+            	})
+            },
         }
     }
 }
 
 /// Walk a regular S-expr `ast`.
 /// Returns the register containing the eval value of `ast` and a boolean flag indicating whether the register is 'temporary'.
-/// All registers are temporary, unless they containg bound values (or in otherwords bound to names).
+/// All registers are temporary, unless they contain bound values (in otherwords registers bound to names).
 fn walk_regular_sexpr(
     ast: Sexpr,
     ralloc: &mut StackAllocator,
@@ -881,8 +1023,12 @@ fn walk_regular_sexpr(
             Ok((r, true))
         }
         SexprKind::List(v) => {
-            let r = walk_regular_list(v, ralloc, cu, sc, ast.loc, true)?;
-            Ok((r, true))
+            walk_regular_list(v, ralloc, cu, sc, ast.loc, true)?
+            	.ok_or_else(|| TlError {
+	                etype: TlErrorType::IllegalList,
+	                msg: "A regular list that occurs as a regular expression must evaluate to a value".to_owned(),
+	                loc: ast.loc,
+	            })
         }
     }
 }

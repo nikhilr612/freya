@@ -8,7 +8,7 @@ use crate::emit::{Sexpr, TextualLocation};
 use crate::utils::CharStream;
 use std::io::Read;
 
-const TOKEN_DELIMS: &str = ")(][ \t\n;";
+const TOKEN_DELIMS: &str = ")(][ \t\r\n;";
 
 /// Parse read `r`, and construct the `Sexpr`.
 pub fn parse<T>(r: &mut T) -> Result<Sexpr, TlError>
@@ -237,10 +237,10 @@ fn match_parse_literal(ch: char, buf: String, loc: TextualLocation) -> Result<Se
         // If the whole token text itself is just '+' or '-', then they are symbols.
         atom!(Symbol(buf), loc) // Symbol
 
-        // ----------------------------------------------------- //
-        // Match integer or floating (numeric) type tokens.
+    // ----------------------------------------------------- //
+    // Match integer or floating (numeric) type tokens.
 
-        // If lead character is '0', then the token is either the integer 0, or an integer in hex, binary, or octal
+    // If lead character is '0', then the token is either the integer 0, or an integer in hex, binary, or octal
     } else if ch == '0' {
         let value = int_from_str_radix_auto(&buf, &loc)?;
         return atom!(Integer(value), loc);

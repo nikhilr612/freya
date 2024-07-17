@@ -325,6 +325,7 @@ pub enum TlErrorType {
     IllegalAtom,
     InvalidForm,
     EmptyList,
+    IllegalList,
     Complex(Vec<TlError>),
 }
 
