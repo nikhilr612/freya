@@ -115,9 +115,9 @@ impl CompileUnit {
     }
 
     fn emit_drop(&mut self, ralloc: &mut StackAllocator, r: u8) -> Result<(), TlError> {
-    	self.emit_simple(op::DROP, r)?;
-    	ralloc.rel(1);
-    	Ok(())
+        self.emit_simple(op::DROP, r)?;
+        ralloc.rel(1);
+        Ok(())
     }
 
     /// Write an instruction with opcode `opcode` and operands specified by `content`.
@@ -669,7 +669,7 @@ fn check_regs_adjacent(v: &[u8]) -> bool {
 }
 
 /// Walk `print` form. Takes exactly one sub-S-expression - the value to print.
-/// In effect `print` is a _procedure_, not a pure function.
+/// In effect `print` is a _procedure_, not a pure function in the traditional sense (since procedures can be conceptualized as functions with unit return type).
 fn walk_print_form(
     it: impl Iterator<Item = Sexpr>,
     ralloc: &mut StackAllocator,
@@ -691,22 +691,22 @@ fn walk_print_form(
     let (r, t) = walk_regular_sexpr(ast, ralloc, cu, sc)?;
     cu.emit_simple(op::PRINT, r)?;
     if t {
-    	cu.emit_drop(ralloc, r)?;
+        cu.emit_drop(ralloc, r)?;
     }
     Ok(())
 }
 
 /// Similar to [walk_regular_sexpr] except that it doesn't require sexpr to yield values.
 fn walk_opt_sexpr(
-	ast: Sexpr,
+    ast: Sexpr,
     ralloc: &mut StackAllocator,
     cu: &mut CompileUnit,
-    sc: &mut Scope<'_>
+    sc: &mut Scope<'_>,
 ) -> Result<Option<(u8, bool)>, TlError> {
-	match ast.kind {
+    match ast.kind {
         SexprKind::Atom(Token::Symbol(s)) => {
-        	Ok(Some(walk_regular_symbol(s, ralloc, cu, sc, ast.loc)?))
-        },
+            Ok(Some(walk_regular_symbol(s, ralloc, cu, sc, ast.loc)?))
+        }
         SexprKind::Atom(t) => {
             let r = ralloc.get();
             eat_literal_atom(t, cu, r)?;
@@ -720,30 +720,208 @@ fn walk_opt_sexpr(
     }
 }
 
+/// Walk a `begin` form, which evaluates any number of sub-S-expressions (but not zero), dicarding the value of all but the last one.
+/// Only the last sub-S-expression is required to be regular; other sub-S-expressions need not be regular.
+///
+/// **Ex**:
+/// ```other
+/// ; this S-expression evaluates to None
+///    (begin
+///     (print "Hello Everyone!")
+///     (+ 10 12) None
+/// )
+/// ```
 fn walk_begin_form(
-	mut it: impl Iterator<Item = Sexpr>,
+    mut it: impl Iterator<Item = Sexpr>,
     ralloc: &mut StackAllocator,
     cu: &mut CompileUnit,
     sc: &mut Scope<'_>,
-    loc: TextualLocation
+    loc: TextualLocation,
 ) -> Result<(u8, bool), TlError> {
-	let v = it.next().ok_or_else(|| TlError {
-		etype: TlErrorType::InvalidForm,
-		msg: "Incomplete begin form; requires at least one S-expression".to_owned(),
-		loc
-	})?;
-	let mut last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
-	for v in it {
-		if let Some((u, true)) = last_eval {
-			cu.emit_drop(ralloc, u)?
-		}
-		last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
-	}
-	last_eval.ok_or_else(|| TlError {
-		etype: TlErrorType::InvalidForm,
-		msg: "Last S-expression in `begin` form must be regular".to_owned(),
-		loc
-	})
+    let v = it.next().ok_or_else(|| TlError {
+        etype: TlErrorType::InvalidForm,
+        msg: "Incomplete begin form; requires at least one S-expression".to_owned(),
+        loc,
+    })?;
+    let mut last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
+    for v in it {
+        if let Some((u, true)) = last_eval {
+            cu.emit_drop(ralloc, u)?
+        }
+        last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
+    }
+    last_eval.ok_or_else(|| TlError {
+        etype: TlErrorType::InvalidForm,
+        msg: "Last S-expression in `begin` form must be regular".to_owned(),
+        loc,
+    })
+}
+
+/// Walk a _binding pair_ which comprises of `name` a sub-S-expression symbol, and `value` a regular sub-S-expression.
+fn walk_binding_pair(
+    mut it: impl Iterator<Item = Sexpr>,
+    ralloc: &mut StackAllocator,
+    cu: &mut CompileUnit,
+    child_scope: &mut Scope<'_>,
+    sc: &mut Scope<'_>,
+    loc: TextualLocation,
+) -> Result<(), TlError> {
+    let name = it
+        .next()
+        .ok_or_else(|| TlError {
+            etype: TlErrorType::ExpectingList,
+            msg: "Incomplete binding pair; expecting name symbol and value regular S-expression"
+                .to_owned(),
+            loc,
+        })?
+        .symbol()
+        .map_err(|e| e.aug("Looking for name-value binding pair."))?;
+
+    let value = it.next().ok_or_else(|| TlError {
+        etype: TlErrorType::ExpectingList,
+        msg: "Incomplete binding pair; expecting value regular S-expression".to_owned(),
+        loc,
+    })?;
+
+    let res = match value.kind {
+        SexprKind::Atom(Token::Symbol(s)) => {
+            if let Some(register) = walk_extern_symbol(&s, ralloc, cu)? {
+                child_scope.bind(name, SymbolType::NamedValue { register })
+            } else if let Some(stype) = sc.resolve(&s) {
+                child_scope.bind(name, stype)
+            } else {
+                debug!("Current scope: {sc:#?}");
+                return Err(TlError {
+                    etype: TlErrorType::UnknownSymbol,
+                    msg: format!(
+                        "Unknown symbol `{s}` as regular S-expression value in binding pair"
+                    ),
+                    loc,
+                });
+            }
+        }
+        SexprKind::Atom(Token::Integer(v)) if (-0x80..0x7f).contains(&v) => {
+            child_scope.bind(name, SymbolType::NamedInteger { value: v as i8 })
+        }
+        SexprKind::Atom(t) => {
+            let id = cu.constants.len();
+            let id = cu.constants.entry(t).or_insert(id);
+            child_scope.bind(
+                name,
+                SymbolType::NamedConstant {
+                    pool_index: *id as u16,
+                },
+            )
+        }
+        SexprKind::List(v) => {
+            let (register, _temp) = walk_regular_list(v, ralloc, cu, sc, loc, true)
+                .map_err(|e| e.aug("Trying to evaluate value in binding pair."))?
+                .ok_or_else(|| TlError {
+                    etype: TlErrorType::IllegalList,
+                    msg: "Binding pair value must be a regular S-expression".to_owned(),
+                    loc: value.loc,
+                })?;
+            child_scope.bind(name, SymbolType::NamedValue { register })
+        }
+    };
+
+    res.map_err(|_| TlError {
+        etype: TlErrorType::ReboundName,
+        msg: "The symbol was already present in bindings list.".to_string(),
+        loc: value.loc,
+    })
+}
+
+/// Walk a `let` form, which binds values to names, evaluates an S-expression in the new child scope.
+/// The `let` form takes exactly two sub-S-expressions. The first of which, must be the list of bindings.
+/// The second S-expression must be a regular S-expression, and is called `body`.
+///
+/// Usage: `(let ([name regular_sexpr]*) body)`
+/// Ex:
+/// ```other
+/// ; this line prints 15
+/// (print (let ([x 5][y 10]) (+ x y)))
+/// ```
+fn walk_let_form(
+    mut it: impl Iterator<Item = Sexpr>,
+    ralloc: &mut StackAllocator,
+    cu: &mut CompileUnit,
+    sc: &mut Scope<'_>,
+    loc: TextualLocation,
+) -> Result<(u8, bool), TlError> {
+    let pairs = it
+        .next()
+        .ok_or_else(|| TlError {
+            etype: TlErrorType::ExpectingList,
+            msg: "Incomplete `let` form; expecting bindings list".to_owned(),
+            loc,
+        })
+        .and_then(|s| {
+            s.list()
+                .map_err(|e| e.aug("Looking for bindings list to walk `let` form."))
+        })?;
+
+    let body = it.next().ok_or_else(|| TlError {
+        etype: TlErrorType::InvalidForm,
+        msg: "Incomplete `let` form; expecting body".to_owned(),
+        loc,
+    })?;
+
+    // TODO: See if dependence on stack allocation characteristics can be eliminated.
+    let mut new_scope = Scope::default();
+    let oldregs = ralloc.cur;
+
+    TlError::capture(
+        pairs.into_iter().map(|s| {
+            s.list()
+                .and_then(|s| walk_binding_pair(s.into_iter(), ralloc, cu, &mut new_scope, sc, loc))
+        }),
+        "Failed to walk binding pairs",
+    )?;
+
+    // Treat everything allocated now as temp; since it is temp in scope `sc`.
+    let mut ntemp = ralloc.cur - oldregs;
+
+    new_scope.parent = Some(sc);
+    let (oreg, temp) = walk_regular_sexpr(body, ralloc, cu, &mut new_scope)?;
+
+    if temp {
+        ntemp += 1;
+    }
+
+    if oreg > oldregs {
+        // Move it to the first register. We'll release the others next.
+        // If oreg > oldregs it means that oreg is either temp, or one of the bound registers in *this* scope.
+        cu.emit(
+            op::MOV,
+            DoubleRegst {
+                r1: oreg,
+                r2: oldregs,
+            },
+        )?;
+        // Release all but one temp register.
+        ralloc.rel(ntemp - 1);
+        cu.emit(
+            op::DEL,
+            DoubleRegst {
+                r1: oldregs + 1,
+                r2: oldregs + ntemp - 1,
+            },
+        )?;
+        Ok((oldregs, true))
+    } else {
+        if ntemp > 0 {
+            ralloc.rel(ntemp);
+            cu.emit(
+                op::DEL,
+                DoubleRegst {
+                    r1: oldregs,
+                    r2: oldregs + ntemp - 1,
+                },
+            )?;
+        }
+        Ok((oldregs, false))
+    }
 }
 
 /// Walk a 'regular' list `(s0 s1 s2 .. sN)` occurring as an S-expr in (i.e, member of, or nested in) a function body.
@@ -838,6 +1016,10 @@ fn walk_regular_list(
 	    		},
 	    		"begin" => {
 	    			let r = walk_begin_form(it, ralloc, cu, sc, loc)?;
+	    			return Ok(Some(r));
+	    		},
+	    		"let" => {
+	    			let r = walk_let_form(it, ralloc, cu, sc, loc)?;
 	    			return Ok(Some(r));
 	    		},
 	    		_ => walk_regular_symbol(s, ralloc, cu, sc, s0.loc)
@@ -994,13 +1176,13 @@ fn walk_regular_symbol(
                 Ok((r1, true))
             }
             None => {
-            	debug!("Current scope: {sc:#?}");
-            	Err(TlError {
-                	etype: TlErrorType::UnknownSymbol,
-                	msg: format!("Unknown symbol `{s}` as atom in regular sexpr"),
-                	loc,
-            	})
-            },
+                debug!("Current scope: {sc:#?}");
+                Err(TlError {
+                    etype: TlErrorType::UnknownSymbol,
+                    msg: format!("Unknown symbol `{s}` as atom in regular sexpr"),
+                    loc,
+                })
+            }
         }
     }
 }
@@ -1023,12 +1205,12 @@ fn walk_regular_sexpr(
             Ok((r, true))
         }
         SexprKind::List(v) => {
-            walk_regular_list(v, ralloc, cu, sc, ast.loc, true)?
-            	.ok_or_else(|| TlError {
-	                etype: TlErrorType::IllegalList,
-	                msg: "A regular list that occurs as a regular expression must evaluate to a value".to_owned(),
-	                loc: ast.loc,
-	            })
+            walk_regular_list(v, ralloc, cu, sc, ast.loc, true)?.ok_or_else(|| TlError {
+                etype: TlErrorType::IllegalList,
+                msg: "A regular list that occurs as a regular expression must evaluate to a value"
+                    .to_owned(),
+                loc: ast.loc,
+            })
         }
     }
 }
