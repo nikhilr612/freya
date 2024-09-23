@@ -16,7 +16,7 @@ strip = true
 panic = "abort"
 
 [dependencies]
-memmap2 = "0.9.4"
+memmap2 = "0.9.5"
 clap = { version = "4.5.18", features = ["derive"] }
 paste = "1.0.15"
 libloading = "0.8.5"
