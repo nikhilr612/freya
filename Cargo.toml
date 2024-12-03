@@ -19,7 +19,7 @@ panic = "abort"
 memmap2 = "0.9.5"
 clap = { version = "4.5.20", features = ["derive"] }
 paste = "1.0.15"
-libloading = "0.8.5"
+libloading = "0.8.6"
 threadpool = "1.8.1"
 glob = "0.3.1"
 log = "0.4"
