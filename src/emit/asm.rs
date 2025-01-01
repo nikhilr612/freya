@@ -29,10 +29,7 @@ impl LabelManager {
 
     fn put_func(&mut self, writer: &mut BufWriter<File>, flabel: &str) -> Result<(), String> {
         let cpos = writer.stream_position().map_err(|e| {
-            format!(
-                "Failed to read file position at label {} definition\n\tcaused by {:?}",
-                flabel, e
-            )
+            format!("Failed to read file position at label {flabel} definition\n\tcaused by {e:?}")
         })?;
         self.func_map
             .insert(flabel.to_owned(), (cpos, None, self.fcount));
@@ -64,26 +61,25 @@ impl LabelManager {
 
     fn def_label(&mut self, writer: &mut BufWriter<File>, label: &str) -> Result<(), String> {
         let cpos = writer.stream_position().map_err(|e| {
-            format!(
-                "Failed to read file position at label {} definition\n\tcaused by {:?}",
-                label, e
-            )
+            format!("Failed to read file position at label {label} definition\n\tcaused by {e:?}")
         })?;
+
         if self.func_map.contains_key(label) {
             self.func_map.get_mut(label).unwrap().1 = Some(cpos);
             return Ok(());
         }
+
         if self.label_map.contains_key(label) {
             if self.label_map.get(label).unwrap().is_some() {
                 return Err(format!(
-                    "Label {} already exists, and cannot be re-defined.",
-                    label
+                    "Label {label} already exists, and cannot be re-defined."
                 ));
-            } else {
-                self.label_map.get_mut(label).unwrap().replace(cpos);
-                return Ok(());
             }
+
+            self.label_map.get_mut(label).unwrap().replace(cpos);
+            return Ok(());
         }
+
         self.label_map.insert(label.to_owned(), Some(cpos));
         Ok(())
     }
@@ -99,10 +95,7 @@ impl LabelManager {
                 Ok(*l as u32)
             } else {
                 let cpos = writer.stream_position().map_err(|e| {
-                    format!(
-                        "Failed to read file position at label {} ref\n\tcaused by {:?}",
-                        label, e
-                    )
+                    format!("Failed to read file position at label {label} ref\n\tcaused by {e:?}")
                 })?;
                 self.label_refs.push((k.to_string(), cpos));
                 Ok(0)
@@ -110,10 +103,7 @@ impl LabelManager {
         } else {
             self.label_map.insert(label.to_owned(), None);
             let cpos = writer.stream_position().map_err(|e| {
-                format!(
-                    "Failed to read file position at label {} ref\n\tcaused by {:?}",
-                    label, e
-                )
+                format!("Failed to read file position at label {label} ref\n\tcaused by {e:?}")
             })?;
             self.label_refs.push((label.to_owned(), cpos));
             Ok(0)
@@ -141,8 +131,7 @@ fn parse_reg(lit: &str, _: &LabelManager) -> Result<u8, String> {
         Ok((rv & 0xff) as u8)
     } else {
         Err(format!(
-            "Expecting register value found {}, try prefixing with '%'",
-            lit
+            "Expecting register value found {lit}, try prefixing with '%'",
         ))
     }
 }
@@ -151,7 +140,7 @@ fn parse_constid(lit: &str, lman: &LabelManager) -> Result<u16, String> {
     if let Some(stripped) = lit.strip_prefix('$') {
         match lman.const_map.get(stripped) {
             Some(id) => Ok(*id),
-            None => Err(format!("No such constant {}", lit)),
+            None => Err(format!("No such constant {lit}")),
         }
     } else {
         Ok(parse_intlit(lit)? as u16)
@@ -159,11 +148,8 @@ fn parse_constid(lit: &str, lman: &LabelManager) -> Result<u16, String> {
 }
 
 pub fn _get_instruction_head(line: &str) -> Result<&str, String> {
-    let idx = match line.find(' ') {
-        Some(u) => u,
-        None => {
-            return Err("Unrecognized syntax".to_string());
-        }
+    let Some(idx) = line.find(' ') else {
+        return Err("Unrecognized syntax".to_string());
     };
     Ok(&line[0..idx])
 }

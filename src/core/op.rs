@@ -165,12 +165,12 @@ pub const POPOR: u8 = 0x6d;
 /// (r2-1) is the register to store return value. If r2 is zero, return value is discarded.
 /// each of rparam.. are registers whose values are arguments for the function call.
 pub const STDCALL: u8 = 0x12;
-/// Obtain FRef Alloc for function within the module.
+/// Obtain `FRef` Alloc for function within the module.
 ///
 /// `r1 <- [i16]`
 pub const LDF: u8 = 0x13;
-/// Obtain FRef Alloc for extern defined in the module.
-/// Throws UnresolvedExtern if the extern declaration could not be resolved successfully.
+/// Obtain `FRef` Alloc for extern defined in the module.
+/// Throws `UnresolvedExtern` if the extern declaration could not be resolved successfully.
 //
 /// `r1 <- [i16]`
 pub const LDX: u8 = 0x14;
@@ -250,7 +250,7 @@ impl TryFrom<&mut SliceView<'_>> for VariadicRegst {
                 ),
             ));
         }
-        for r in rvec.iter_mut() {
+        for r in &mut rvec {
             *r = sl.get_u8();
         }
         Ok(VariadicRegst { regs: rvec })

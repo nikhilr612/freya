@@ -82,8 +82,7 @@ impl core::hash::Hash for Token {
             Token::Boolean(v) => state.write_u8(*v as u8),
             Token::Float(v) => state.write_u64(v.to_bits()),
             Token::Char(v) => state.write_u32(*v as u32),
-            Token::Str(v) => v.hash(state),
-            Token::Symbol(v) => v.hash(state),
+            Token::Str(v) | Token::Symbol(v) => v.hash(state),
         }
     }
 }
@@ -182,9 +181,9 @@ impl core::fmt::Debug for Sexpr {
         match &self.kind {
             SexprKind::Atom(t) => {
                 if fmt.alternate() {
-                    write!(fmt, "Atom::{} ", t)
+                    write!(fmt, "Atom::{t} ")
                 } else {
-                    write!(fmt, "{}", t)
+                    write!(fmt, "{t}")
                 }
             }
             SexprKind::List(v) => {
@@ -241,7 +240,7 @@ impl Sexpr {
 
     /// Iterate through the elements of the S-expr immutably.
     /// Returns `Err` if S-expr is `Atom`.
-    fn iter(&self) -> Result<impl Iterator<Item = &Sexpr>, TlError> {
+    fn try_iter(&self) -> Result<impl Iterator<Item = &Sexpr>, TlError> {
         match &self.kind {
             SexprKind::Atom(t) => Err(TlError {
                 etype: TlErrorType::ExpectingList,
@@ -271,7 +270,7 @@ impl Sexpr {
         }
     }
 
-    /// Consume this S-expr and yield the inner symbol`.
+    /// Consume this S-expr and yield the inner symbol.
     /// Returns `Err` if S-expr is a `List`, or any `Atom` other than `Symbol`.
     /// The error comprises of a generic error message, which ought to be augmented with additional context.
     fn symbol(self) -> Result<String, TlError> {
@@ -313,19 +312,33 @@ impl Sexpr {
 /// An aggregate enum with error codes for all errors involved in parsing, and code emitting phases.
 #[derive(Debug)]
 pub enum TlErrorType {
+    /// Error when performing I/O operations
     IoError,
+    /// Found a token that was not expected in the current context
     UnexpectedToken,
+    /// Reached end of file unexpectedly
     UnexpectedEOF,
+    /// Found an invalid numeric value
     InvalidNumeric,
+    /// Found an invalid character
     InvalidChar,
+    /// Attempted to redefine an already bound name
     ReboundName,
+    /// Expected a list but found something else
     ExpectingList,
+    /// Expected an atom but found something else
     ExpectingAtom,
+    /// Referenced a symbol that has not been defined
     UnknownSymbol,
+    /// Found an atom that is illegal in the current context
     IllegalAtom,
+    /// Found an invalid form/syntax structure
     InvalidForm,
+    /// Found an empty list where a non-empty list was required
     EmptyList,
+    /// Found a list that is illegal in the current context
     IllegalList,
+    /// Represents multiple errors bundled together
     Complex(Vec<TlError>),
 }
 
@@ -377,7 +390,7 @@ impl TlError {
         let mut v = Vec::new();
         for it in itr {
             if let Err(e) = it {
-                v.push(e)
+                v.push(e);
             }
         }
         if v.is_empty() {
@@ -410,7 +423,7 @@ impl TlError {
             match v {
                 Ok(a) => {
                     if no_error {
-                        vals.push(op(a))
+                        vals.push(op(a));
                     }
                 }
                 Err(e) => {
@@ -443,7 +456,7 @@ impl std::fmt::Debug for TlError {
             ),
             TlErrorType::Complex(v) if fmt.alternate() => {
                 writeln!(fmt, "TlError [Complex]: {}, {:?}", self.msg, self.loc)?;
-                for i in v.iter() {
+                for i in v {
                     writeln!(fmt, "|-----> {i:#?}")?;
                 }
                 Ok(())

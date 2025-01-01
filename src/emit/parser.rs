@@ -1,4 +1,4 @@
-//! Module for SExpr parser. This parser can handle unicode characters reasonably well.
+//! Module for S-expression parser. This parser can handle unicode characters reasonably well.
 //! Builds a tree of tokens.
 
 // TODO: Extremely verbose. Desperately needs a re-write.
@@ -50,7 +50,7 @@ where
 }
 
 #[inline]
-/// Helper function to call `stream.next_char` and map errors to TlErrors.
+/// Helper function to call `stream.next_char` and map errors to `TlError`s.
 fn expect_char<T>(stream: &mut CharStream<'_, T>) -> Result<char, TlError>
 where
     T: Read,
@@ -62,7 +62,7 @@ where
 }
 
 /// Fetch characters from the stream and push into buffer, until one in the parameter string is found.
-/// Returns the last character read from the stream, or any IoErrors that occured.
+/// Returns the last character read from the stream, or any `IoError`s that occured.
 /// Returns `Err` if stream reaches EOF.
 fn cspan<T>(
     stream: &mut CharStream<'_, T>,
@@ -147,9 +147,7 @@ where
     T: Read,
 {
     let ch = expect_char(stream)?;
-    if ch != '\\' {
-        Ok((ch, false))
-    } else {
+    if ch == '\\' {
         let ch = expect_char(stream)?;
         Ok((
             match ch {
@@ -160,15 +158,17 @@ where
                 'r' => '\r',
                 'u' => parse_unicode_hex(stream)?,
                 a => {
-                    return Err(TlError { 
+                    return Err(TlError {
 						etype: TlErrorType::InvalidChar,
 						msg: format!("Unknown escape sequence \\{a}. Only \\\', \\\",\\r, \\n, \\t, \\uXXXX are allowed."),
-						loc: TextualLocation::record(stream) 
+						loc: TextualLocation::record(stream)
 					});
                 }
             },
             true,
         ))
+    } else {
+        Ok((ch, false))
     }
 }
 
@@ -183,9 +183,8 @@ where
         let (ch, esc) = parse_char_raw(stream)?;
         if !esc && ch == '\"' {
             break;
-        } else {
-            s.push(ch);
         }
+        s.push(ch);
     }
 
     atom!(Str(s), loc.end(stream))
@@ -200,14 +199,14 @@ where
     // The single quote has already been read, so..
     let (ch, _esc) = parse_char_raw(stream)?;
     if expect_char(stream)? != '\'' {
-        Err(TlError {
+        return Err(TlError {
             etype: TlErrorType::InvalidChar,
             msg: format!("Character literal '{ch}' must be enclosed by single quotes."),
             loc,
-        })
-    } else {
-        atom!(Char(ch), loc.end(stream))
+        });
     }
+
+    atom!(Char(ch), loc.end(stream))
 }
 
 fn parse_comment<T>(stream: &mut CharStream<'_, T>) -> Result<(), TlError>

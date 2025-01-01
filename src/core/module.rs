@@ -30,8 +30,8 @@ pub enum ResolutionStatus {
 
 #[derive(Debug)]
 /// Alternative value enum.
-/// Convert BaseType to ConstantValue to send value across threads; and explicitly requires verification of the entire object tree.
-/// ConstantValue -> BaseType is a trivial copy, but BaseType -> ConstantValue is a tree search.
+/// Convert `BaseType to `ConstantValue` to send value across threads; and explicitly requires verification of the entire object tree.
+/// `ConstantValue` -> `BaseType is a trivial copy, but `BaseType -> `ConstantValue` is a tree search.
 /// Used to ensure that BaseType is explicitly not Send or Sync.
 pub(crate) enum ConstantValue {
     Int(i64),
@@ -121,15 +121,6 @@ impl Module {
         Ok(*idx)
     }
 
-    /*pub(crate) fn extern_fref(&self, mid2: usize, id1: usize) -> crate::types::BaseType {
-        let extd = &self.extern_decl[id1 % self.extern_decl.len()];
-        if extd.resolved() {
-            crate::types::CompositeType::new_fref(extd.module_id, extd.function_id, false)
-        } else {
-            crate::types::CompositeType::new_fref(mid2, id1, true)
-        }
-    }*/
-
     pub fn extern_ref(&self, id: usize) -> &ExternDecl {
         &self.extern_decl[id]
     }
@@ -138,15 +129,17 @@ impl Module {
         &mut self.extern_decl[id]
     }
 
-    pub(crate) fn clone_constant(&self, idx: usize, wt: &mut RefCounter) -> Option<BaseType> {
+    pub(crate) fn clone_constant(&self, idx: usize, wt: &mut RefCounter) -> BaseType {
         match &self.constant_pool[idx] {
-            ConstantValue::Int(i1) => Some(BaseType::Int(*i1)),
-            ConstantValue::Flt(f1) => Some(BaseType::Flt(*f1)),
-            ConstantValue::Chr(ch) => Some(BaseType::Chr(*ch)),
+            ConstantValue::Int(i1) => BaseType::Int(*i1),
+            ConstantValue::Flt(f1) => BaseType::Flt(*f1),
+            ConstantValue::Chr(ch) => BaseType::Chr(*ch),
             ConstantValue::Obj(bx) => {
                 let ptr = bx.as_ref() as *const CompositeType;
-                wt.incref(ptr).map_err(|e| {eprintln!("massive cockup: {}\n\tAn object from the constant pool must only have immutable references. Anything else reeks of blunder.", e);}).unwrap();
-                Some(BaseType::ConstRef(ptr))
+                wt.incref(ptr).map_err(|e| {
+                    eprintln!("massive cockup: {e}\n\tAn object from the constant pool must only have immutable references. Anything else reeks of blunder.");
+                }).unwrap();
+                BaseType::ConstRef(ptr)
             }
         }
     }
@@ -157,7 +150,7 @@ impl Module {
 /// Ideally, modules should only be loaded on the first call
 #[derive(Debug)]
 pub struct ModulePool {
-    /// RwLock for vector of loaded modules
+    /// Lock for vector of loaded modules
     mlock: RwLock<Vec<Module>>,
     /// Path map for modules
     pathm: RwLock<HashMap<String, usize>>,
@@ -186,7 +179,7 @@ impl ModulePool {
 
     pub fn resolve_path(&self, path: &str) -> FResult<PathBuf> {
         let mut buf = PathBuf::new();
-        for dirpath in self.spath.iter() {
+        for dirpath in &self.spath {
             buf.push(dirpath);
             buf.push(Path::new(path));
             buf.set_extension(FILEXT);

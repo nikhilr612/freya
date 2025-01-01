@@ -563,7 +563,7 @@ impl CompositeType {
             }
             CompositeType::BitSet(b) => {
                 let index = Self::_verify_index(idx, b.capacity())?;
-                Ok(BaseType::Int(b.get_unchecked(index) as i64))
+                Ok(BaseType::Int(i64::from(b.get_unchecked(index))))
             }
             CompositeType::List(v) => {
                 let index = Self::_verify_index(idx, v.len())?;
@@ -588,7 +588,7 @@ impl CompositeType {
             }
             CompositeType::BitSet(b) => {
                 let index = Self::_verify_index(idx, b.capacity())?;
-                Ok(BaseType::Int(b.get_unchecked(index) as i64))
+                Ok(BaseType::Int(i64::from(b.get_unchecked(index))))
             }
             CompositeType::Str(s) => {
                 // Identical to get_index, just for convenience.
@@ -628,7 +628,7 @@ impl CompositeType {
 fn display_list_slice(fmt: &mut Formatter<'_>, slice: &[BaseType]) -> Result<(), std::fmt::Error> {
     write!(fmt, "[")?;
     let mut flag = false;
-    for v in slice.iter() {
+    for v in slice {
         if flag {
             write!(fmt, ",")?;
         } else {
@@ -642,7 +642,7 @@ fn display_list_slice(fmt: &mut Formatter<'_>, slice: &[BaseType]) -> Result<(),
 impl Display for CompositeType {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            CompositeType::Str(s) => write!(fmt, "{}", s),
+            CompositeType::Str(s) => write!(fmt, "{s}"),
             CompositeType::Slice {
                 parent,
                 start_off,
@@ -675,7 +675,7 @@ impl Display for CompositeType {
             CompositeType::BitSet(bset) => {
                 write!(fmt, "{bset}")
             }
-            a => write!(fmt, "{:?}", a),
+            a => write!(fmt, "{a:?}"),
         }
     }
 }
@@ -700,8 +700,9 @@ impl PartialEq for BaseType {
     fn eq(&self, other: &BaseType) -> bool {
         match (self, other) {
             (BaseType::Int(i1), BaseType::Int(i2)) => i1 == i2,
-            (BaseType::Int(i1), BaseType::Flt(f2)) => *i1 as f64 == *f2,
-            (BaseType::Flt(f2), BaseType::Int(i1)) => *i1 as f64 == *f2,
+            (BaseType::Int(i1), BaseType::Flt(f2)) | (BaseType::Flt(f2), BaseType::Int(i1)) => {
+                *i1 as f64 == *f2
+            }
             (BaseType::Flt(f1), BaseType::Flt(f2)) => f1 == f2,
             (BaseType::Chr(c1), BaseType::Chr(c2)) => c1 == c2,
             (BaseType::Alloc(a1), BaseType::Alloc(a2)) => {
@@ -854,7 +855,7 @@ impl_bit_op!(try_right_bitshift, shr, ">>");
 impl_bit_op!(try_bitwise_xor, bitxor, "<<");
 
 /// Attempt to copy the contents of this value.
-/// Fails if base type is MutRef or OpaqueHandle.
+/// Fails if base type is `MutRef` or `OpaqueHandle`.
 fn _copy_or_borrow(val: &BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
     match val {
         BaseType::Int(i1) => Ok(BaseType::Int(*i1)),
@@ -883,7 +884,7 @@ fn _copy_or_borrow(val: &BaseType, refc: &mut RefCounter) -> Result<BaseType, Fa
 }
 
 /// Attempt to copy the contents of this value.
-/// Fails if base type is MutRef or OpaqueHandle.
+/// Fails if base type is `MutRef` or `OpaqueHandle`.
 fn _copy_or_borrow_mut(val: &mut BaseType, refc: &mut RefCounter) -> Result<BaseType, FatalErr> {
     match val {
         BaseType::Int(i1) => Ok(BaseType::Int(*i1)),
@@ -975,22 +976,12 @@ impl_rel_op!(try_gt, is_gt);
 impl_rel_op!(try_lte, is_le);
 impl_rel_op!(try_gte, is_ge);
 
-pub fn try_eq(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
-    Ok(BaseType::Int(rv1.eq(rv2) as i64))
+pub fn eq_convert(rv1: &BaseType, rv2: &BaseType) -> BaseType {
+    BaseType::Int(i64::from(rv1.eq(rv2)))
 }
 
-#[inline]
-pub fn try_neq(rv1: &BaseType, rv2: &BaseType) -> Result<BaseType, FatalErr> {
-    match try_eq(rv1, rv2) {
-        Ok(b) => {
-            if let BaseType::Int(i1) = b {
-                Ok(BaseType::Int(1 - i1))
-            } else {
-                Ok(BaseType::Int(0))
-            }
-        }
-        _ => Ok(BaseType::Int(0)),
-    }
+pub fn neq_convert(rv1: &BaseType, rv2: &BaseType) -> BaseType {
+    BaseType::Int(i64::from(!rv1.eq(rv2)))
 }
 
 #[inline]
@@ -1085,7 +1076,7 @@ pub fn as_printrepr(rv: &BaseType) -> Result<String, FatalErr> {
     })
 }
 
-#[inline(always)]
+#[inline]
 fn unsafe_deref<A, B: Display>(ptr: *const A, value: &B) -> Result<&A, FatalErr> {
     unsafe {
         ptr.as_ref().ok_or(new_error(
@@ -1095,7 +1086,7 @@ fn unsafe_deref<A, B: Display>(ptr: *const A, value: &B) -> Result<&A, FatalErr>
     }
 }
 
-#[inline(always)]
+#[inline]
 fn unsafe_deref_mut<A, B: Display>(ptr: *mut A, value: &B) -> Result<&mut A, FatalErr> {
     unsafe {
         ptr.as_mut().ok_or(new_error(
@@ -1167,9 +1158,8 @@ where
         let cmp = v1.try_compare(v2)?;
         if let Ordering::Equal = cmp {
             continue;
-        } else {
-            return Ok(Some(cmp));
         }
+        return Ok(Some(cmp));
     }
     Ok(None)
 }

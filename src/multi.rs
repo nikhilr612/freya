@@ -33,8 +33,8 @@ where
         let ltx = tx.clone();
         pool.execute(move || {
             ltx.send(op(elm))
-                .expect("Failed to send result message to receiver channel.")
-        })
+                .expect("Failed to send result message to receiver channel.");
+        });
     }
 
     // Wait for all jobs to finish.

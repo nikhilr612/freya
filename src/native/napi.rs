@@ -193,5 +193,5 @@ pub unsafe extern "C" fn fr_set_return_flt(cenv: *mut CallEnv, v: f64) {
 /// `cenv` must be a valid pointer to a `CallEnv`
 pub unsafe extern "C" fn fr_set_return_opaque(cenv: *mut CallEnv, ptr: *const core::ffi::c_void) {
     let cenv = mutptr_to_mref(cenv);
-    cenv.retval = Some(BaseType::OpaqueHandle(ptr as usize))
+    cenv.retval = Some(BaseType::OpaqueHandle(ptr as usize));
 }

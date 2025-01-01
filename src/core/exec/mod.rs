@@ -253,6 +253,19 @@ macro_rules! instr_3arg {
     }};
 }
 
+macro_rules! instr_3arg_infallible {
+    ($func: expr, $slvw: ident, $frame: ident, $refc: expr) => {{
+        let param = op::TripleRegst::try_from(&mut $slvw)?;
+
+        let rv1 = $frame.read_register(param.r1)?;
+        let rv2 = $frame.read_register(param.r2)?;
+        let rid = param.r3;
+
+        let res = $func(rv1, rv2);
+        $frame.write_register(rid, res, &mut $refc)?;
+    }};
+}
+
 macro_rules! instr_2arg {
     ($slvw: ident, $frame: ident, $refc: expr, |$val:ident| $body: block) => {{
         let param = op::DoubleRegst::try_from(&mut $slvw)?;
@@ -302,7 +315,7 @@ impl WorkerThread {
                     let itype = op::Id16Reg::try_from(&mut slvw)?;
                     let id = itype.id as usize;
                     let mrfc = &mut self.refc;
-                    let val = cur_module.clone_constant(id, mrfc).unwrap();
+                    let val = cur_module.clone_constant(id, mrfc);
                     cur_frame.write_register(itype.r1, val, mrfc)?;
                 }
                 op::PRINT => {
@@ -336,8 +349,8 @@ impl WorkerThread {
                 op::RLE => instr_3arg!(types::try_lte, slvw, cur_frame, self.refc),
                 op::RGT => instr_3arg!(types::try_gt, slvw, cur_frame, self.refc),
                 op::RGE => instr_3arg!(types::try_gte, slvw, cur_frame, self.refc),
-                op::REQ => instr_3arg!(types::try_eq, slvw, cur_frame, self.refc),
-                op::RNEQ => instr_3arg!(types::try_neq, slvw, cur_frame, self.refc),
+                op::REQ => instr_3arg_infallible!(types::eq_convert, slvw, cur_frame, self.refc),
+                op::RNEQ => instr_3arg_infallible!(types::neq_convert, slvw, cur_frame, self.refc),
                 op::LDI => {
                     let val = slvw.get_u8() as i8;
                     let out_reg = slvw.get_u8();

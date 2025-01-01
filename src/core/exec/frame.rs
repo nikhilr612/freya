@@ -91,7 +91,7 @@ impl CallFrame {
     }
 
     /// 'Read' register `r`.
-    /// Returns an immutable reference to the value stored at index `r.
+    /// Returns an immutable reference to the value stored at index `r`.
     /// Returns `Err` if register id `r` is invalid, or register is empty.
     pub fn read_register(&self, r: u8) -> FResult<&BaseType> {
         self.regs
@@ -183,38 +183,6 @@ impl CallFrame {
         Ok(())
     }
 
-    #[deprecated(
-        since = "0.2.6",
-        note = "Bad method. Secretly unchecked. Use `take_register`."
-    )]
-    pub fn _take_register(&mut self, r1: usize, rc: &mut RefCounter) -> FResult<Option<BaseType>> {
-        let btp = &self.regs[r1];
-        if btp.is_none() {
-            return Ok(None);
-        }
-        let btp = btp.as_ref().unwrap();
-        // TOOD: Remove duplicate base type copy code
-        let ret = match btp {
-            BaseType::Int(v) => BaseType::Int(*v),
-            BaseType::Flt(v) => BaseType::Flt(*v),
-            BaseType::Chr(v) => BaseType::Chr(*v),
-            BaseType::Alloc(a) => match a.try_copy() {
-                Some(a) => BaseType::Alloc(Box::new(a)),
-                None => self.regs[r1].take().unwrap(),
-            },
-            BaseType::ConstRef(v) => {
-                // ConstRefs are copy on move.
-                rc.incref(*v)?;
-                BaseType::ConstRef(*v)
-            }
-            _ => {
-                // Move mutable refs, OpaqueHandles
-                self.regs[r1].take().unwrap()
-            }
-        };
-        Ok(Some(ret))
-    }
-
     /// 'Take' a value from specified register `r`.
     /// 'Take' differs significantly from traditional _move_ or _copy_ semantics, in that that it is a hybrid of both.
     /// _Taking a value_ will result in copying whenever possible, otherwise it will move.
@@ -257,9 +225,6 @@ impl CallFrame {
     /// May call `cleanup` on values in composite types, resulting in recursive de-allocs.
     pub fn dealloc_ctype(ctype: types::CompositeType, refc: &mut RefCounter) -> FResult<()> {
         match ctype {
-            types::CompositeType::FRef { .. } => {
-                // No alloc here.
-            }
             types::CompositeType::Str(_s) => {
                 // No sub objects owned.
             }
@@ -273,15 +238,13 @@ impl CallFrame {
             types::CompositeType::List(v) => {
                 // Cleanup all sub-objects / values
                 for value in v {
-                    Self::cleanup_value(value, refc)?
+                    Self::cleanup_value(value, refc)?;
                     // value is dropped.
                 }
             }
-            types::CompositeType::Range { .. } => {
+            types::CompositeType::Range { .. } | types::CompositeType::FRef { .. } => {
                 // No alloc here.
-            } /*,_ => {
-                  unimplemented!()
-              }*/
+            }
         }
         Ok(())
     }
@@ -295,11 +258,10 @@ impl CallFrame {
             BaseType::MutRef(r) => rc.decref_mut(r),
             BaseType::Alloc(bx) => {
                 let c = rc.count_of(bx.as_ref());
-                if c != (0, 0) {
-                    Err(types::new_error(ErrorType::PrematureDealloc, 
-					 	format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)))
-                } else {
+                if c == (0, 0) {
                     Self::dealloc_ctype(*bx, rc)
+                } else {
+                    Err(types::new_error(ErrorType::PrematureDealloc, format!("Cannot deallocate {bx} whilst active references remain ({} immutable, {} mutable)", c.0, c.1)))
                 }
             }
             _ => Ok(()),
@@ -310,7 +272,7 @@ impl CallFrame {
     /// References are dropped first in order to ensure that there are no `PrematureDealloc`s.
     pub fn release(mut self, rc: &mut RefCounter) -> FResult<()> {
         // Double-pass, drop all references first, ...
-        for r in self.regs.iter_mut() {
+        for r in &mut self.regs {
             match r {
                 Some(BaseType::ConstRef(ptr)) => {
                     rc.decref(*ptr)?;

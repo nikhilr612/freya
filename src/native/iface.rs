@@ -9,7 +9,7 @@ use crate::core::{new_error, ErrorType, FResult};
 use super::NativeHandle;
 
 /// Struct to hold info pertaining to native modules loaded.
-/// NativeInterfaces are only loaded upon the first call to a function.
+/// `NativeInterface`s are only loaded upon the first call to a function.
 /// Functions are loaded upon their first invocation. Native functions are not pre-resolved.
 #[derive(Default)]
 struct NativeInterface {

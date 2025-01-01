@@ -23,19 +23,7 @@ use core::module;
 
 pub mod native;
 
-// TODO: Remove horrific artifact of the past.
-macro_rules! on_error_exit_gracefully {
-    ($res: expr, $ev: ident,$body: block) => {
-        match $res {
-            Ok(()) => (),
-            Err($ev) => {
-                $body
-                eprintln!("VM Panicked on error.");
-                return ExitCode::FAILURE;
-            }
-        }
-    };
-}
+const ENTRY_POINT: &str = "main";
 
 fn assemble_one(path: &PathBuf, outpath: &PathBuf, debug: bool) -> Result<(), String> {
     // Almost gave in to the generics-mania here...
@@ -89,10 +77,10 @@ fn assemble_one(path: &PathBuf, outpath: &PathBuf, debug: bool) -> Result<(), St
     Ok(())
 }
 
-fn resolve_glob(path: &str, output: Option<&String>) -> Vec<(PathBuf, PathBuf)> {
+fn resolve_glob(path: &str, output: Option<String>) -> Vec<(PathBuf, PathBuf)> {
     let it = glob::glob(path)
         .expect("Could not read glob from input.")
-        .filter_map(|s| s.ok());
+        .filter_map(Result::ok);
 
     let v: Vec<_> = match output {
         None => it
@@ -111,7 +99,7 @@ fn resolve_glob(path: &str, output: Option<&String>) -> Vec<(PathBuf, PathBuf)> 
                     let p3 = p.with_extension("fr");
                     (p, p3)
                 } else {
-                    let mut p3 = PathBuf::from(dir);
+                    let mut p3 = PathBuf::from(&dir);
                     p3.push(p.as_path());
                     p3.set_extension("fr");
                     (p, p3)
@@ -122,8 +110,8 @@ fn resolve_glob(path: &str, output: Option<&String>) -> Vec<(PathBuf, PathBuf)> 
     v
 }
 
-fn assemble_many(path: String, output: Option<String>, debug: bool) -> ExitCode {
-    let pairs = resolve_glob(&path, output.as_ref());
+fn assemble_many(path: &str, output: Option<String>, debug: bool) -> ExitCode {
+    let pairs = resolve_glob(path, output);
 
     if pairs.is_empty() {
         error!("No files found.");
@@ -131,9 +119,9 @@ fn assemble_many(path: String, output: Option<String>, debug: bool) -> ExitCode 
     }
 
     trace!("Found files.");
-    pairs.iter().for_each(|(a, b)| {
+    for (a, b) in &pairs {
         debug!("{} => {}", a.display(), b.display());
-    });
+    }
 
     let mut ret = ExitCode::SUCCESS;
 
@@ -149,6 +137,7 @@ fn assemble_many(path: String, output: Option<String>, debug: bool) -> ExitCode 
     ret
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> ExitCode {
     pretty_env_logger::init();
     let cli = args::MainArgs::parse();
@@ -169,7 +158,7 @@ fn main() -> ExitCode {
             let mut nifp = native::InterfacePool::default();
             for path in nlibpath {
                 if let Some((a, b)) = path.split_once('=') {
-                    nifp.add_path(a, b)
+                    nifp.add_path(a, b);
                 } else {
                     eprintln!("WARNING: {path} is not a valid key-value pair for specifying libraries. Expect [name]=[path] format.");
                 }
@@ -187,13 +176,14 @@ fn main() -> ExitCode {
                     .as_path(),
             );
 
-            let res = mp.load(&filepath);
-            on_error_exit_gracefully!(res, e, {
-                eprintln!("{e}");
-            });
+            if let Err(e) = mp.load(&filepath) {
+                error!("Failed to load module {filepath} into the module pool.");
+                return ExitCode::FAILURE;
+            }
+
             let mp = Arc::new(mp);
 
-            let ep = cli.entry_pt.unwrap_or("main".to_string());
+            let ep = cli.entry_pt.unwrap_or(ENTRY_POINT.to_string());
 
             let mut wt = exec::WorkerThread::with_args(
                 &filepath,
@@ -204,11 +194,12 @@ fn main() -> ExitCode {
                 std::iter::once(to_pass),
             );
 
-            let res = wt.begin();
-            on_error_exit_gracefully!(res, e, {
-                eprintln!("{}", e);
+            if let Err(e) = wt.begin() {
+                eprintln!("{e}");
                 wt.print_stack_trace();
-            });
+                error!("VM Panicked on error.");
+                return ExitCode::FAILURE;
+            }
         }
         args::Commands::Assemble {
             path,
@@ -216,21 +207,18 @@ fn main() -> ExitCode {
             is_glob,
         } => {
             if is_glob {
-                return assemble_many(path, output, cli.debug);
-            } else {
-                let path = PathBuf::from(path);
-                let outpath = output
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| path.with_extension("fr"));
-                assemble_one(&path, &outpath, cli.debug).unwrap_or_else(|e| {
-                    eprintln!("{e}");
-                });
+                return assemble_many(&path, output, cli.debug);
             }
+
+            let path = PathBuf::from(path);
+            let outpath = output.map_or_else(|| path.with_extension("fr"), PathBuf::from);
+            assemble_one(&path, &outpath, cli.debug).unwrap_or_else(|e| {
+                eprintln!("{e}");
+            });
         }
         args::Commands::MonoCompile { path, output } => {
-            let output = output
-                .map(PathBuf::from)
-                .unwrap_or(Path::new(&path).with_extension("fr"));
+            let output =
+                output.map_or_else(|| Path::new(&path).with_extension("fr"), PathBuf::from);
             trace!("Input: {path}, Output: {}", output.display());
             let file = File::open(path).expect("Failed to open file");
             let mut reader = BufReader::new(file);

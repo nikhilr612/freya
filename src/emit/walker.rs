@@ -248,7 +248,7 @@ impl StackAllocator {
         let st = self.cur;
         self.cur += s as u8;
         if self.cur > self.max {
-            self.max = self.cur
+            self.max = self.cur;
         }
         st..self.cur
     }
@@ -257,15 +257,16 @@ impl StackAllocator {
         let r = self.cur;
         self.cur += 1;
         if self.cur > self.max {
-            self.max = self.cur
+            self.max = self.cur;
         }
         r
     }
 
     fn rel(&mut self, s: u8) {
-        if self.cur < s {
-            panic!("Register allocation cockup; Trying to release more registers than available.");
-        }
+        assert!(
+            self.cur >= s,
+            "Register allocation cockup; Trying to release more registers than available."
+        );
         self.cur -= s;
     }
 }
@@ -289,7 +290,7 @@ fn visit_constant<'a>(
 	    },
 	    SexprKind::Atom(t) => Ok(t.clone()),
 	    SexprKind::List(_) => {
-	    	Err(TlError { 
+	    	Err(TlError {
 	    		etype: TlErrorType::ExpectingAtom,
 	    		msg: "Expecting literal atom to evaluate as constant value. Found list. List literals are not atoms".to_owned(),
 	    		loc: a.loc
@@ -449,13 +450,13 @@ fn visit_require_form<'a>(
 }
 
 fn visit_root_list(ast: &Sexpr, cu: &mut CompileUnit, sc: &mut Scope<'_>) -> Result<(), TlError> {
-    let mut it = ast.iter()?;
+    let mut it = ast.try_iter()?;
     let a = it
 		.next()
-		.ok_or_else(|| TlError { 
+		.ok_or_else(|| TlError {
 			etype: TlErrorType::EmptyList,
-			msg: "Root-level lists MUST be either `define` or `require` forms. Empty lists are not allowed here.".to_owned(), 
-			loc: ast.loc 
+			msg: "Root-level lists MUST be either `define` or `require` forms. Empty lists are not allowed here.".to_owned(),
+			loc: ast.loc
 		})?;
     let symbol = a
         .inspect_symbol()
@@ -508,7 +509,7 @@ fn eat_literal_atom(t: Token, cu: &mut CompileUnit, r1: u8) -> Result<(), TlErro
 /// Walk a func-type `define` form. Does nothing if `define` form is const-type.
 /// Verifies that `(name param..)` list (i.e, the `head`) comprises only of symbols and then walks the `body`.
 ///
-/// There are essentially two types of func-type `define` forms` :
+/// There are essentially two types of func-type `define` forms :
 /// 1. _Stub_ : when the body is an atom.
 /// 2. _Extended_ : when the body is a list.
 ///
@@ -532,9 +533,9 @@ fn eat_literal_atom(t: Token, cu: &mut CompileUnit, r1: u8) -> Result<(), TlErro
 /// ```
 /// # Impl Considerations
 /// There are two things apparent from the preceding section:
-/// 1. Although _Stub_ type forms allow for 'elegant' definition of simple functions, under the current rules, it introduces syntax that can easily be misused.
+///     1. Although _Stub_ type forms allow for 'elegant' definition of simple functions, under the current rules, it introduces syntax that can easily be misused.
 /// To prevent this, it may be worthwhile, to first verify contents of the parameter list seperately, ensuring that they are all symbols, for one.
-/// 2. The syntax for _Extended_ type is not amenable for misuse; however, it may lend to needless verbosity in simple cases.
+///     2. The syntax for _Extended_ type is not amenable for misuse; however, it may lend to needless verbosity in simple cases.
 /// One way to fix this issue would be to temporarily grant special privilege to the symbol `_` to imply an absence of binding.
 fn walk_define_form(
     v: Vec<Sexpr>,
@@ -696,7 +697,7 @@ fn walk_print_form(
     Ok(())
 }
 
-/// Similar to [walk_regular_sexpr] except that it doesn't require sexpr to yield values.
+/// Similar to [`walk_regular_sexpr`] except that it doesn't require sexpr to yield values.
 fn walk_opt_sexpr(
     ast: Sexpr,
     ralloc: &mut StackAllocator,
@@ -746,7 +747,7 @@ fn walk_begin_form(
     let mut last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
     for v in it {
         if let Some((u, true)) = last_eval {
-            cu.emit_drop(ralloc, u)?
+            cu.emit_drop(ralloc, u)?;
         }
         last_eval = walk_opt_sexpr(v, ralloc, cu, sc)?;
     }
@@ -1026,10 +1027,10 @@ fn walk_regular_list(
 	    	}
 	    },
 	    SexprKind::Atom(t) => {
-	    	return Err(TlError { 
+	    	return Err(TlError {
 	    		etype: TlErrorType::IllegalAtom,
 	    		msg: format!("{t} is not a symbol. The first sub-expression in a regular list must either be a symbol, or a list (which would be regular)."),
-	    		loc: s0.loc 
+	    		loc: s0.loc
 	    	})
 	    }
 	    SexprKind::List(v) => {

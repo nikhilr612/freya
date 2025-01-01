@@ -45,7 +45,7 @@ impl RefCounter {
             tup.0 += 1;
             if tup.1 != 0 {
                 let r = unsafe { &*ptr };
-                return self.error_or_warn(new_error(ErrorType::CoincidentRef, 
+                return self.error_or_warn(new_error(ErrorType::CoincidentRef,
 					format!("@{addr:x}:{r}, has an active mutable reference, and hence cannot acquire an immutable reference.")));
             }
         }
@@ -145,7 +145,7 @@ impl RefCounter {
         let addr = (value as *const types::CompositeType) as usize;
         if mcount > 0 {
             return self.error_or_warn(
-				new_error(ErrorType::CoincidentRef, 
+				new_error(ErrorType::CoincidentRef,
 					format!("@{addr:x}:{value} has an active mutable reference, hence cannot acquire immutable reference.")
 				));
         }
