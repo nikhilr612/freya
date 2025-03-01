@@ -17,7 +17,7 @@ panic = "abort"
 
 [dependencies]
 memmap2 = "0.9.5"
-clap = { version = "4.5.23", features = ["derive"] }
+clap = { version = "4.5.31", features = ["derive"] }
 paste = "1.0.15"
 libloading = "0.8.6"
 threadpool = "1.8.1"
